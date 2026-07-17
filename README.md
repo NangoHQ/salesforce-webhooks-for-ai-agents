@@ -84,15 +84,17 @@ Open **http://localhost:3000** — a chat interface with the agent, where Salesf
 The pipeline internals appear in the terminal:
 
 ```
-📥 Sync webhook: contacts/SalesforceContact (+0 ~1 -0)
+📥 Sync webhook: records/SalesforceContact (+0 ~1 -0)
    Fetched 1 changed record(s) from Nango's records cache
 
-🤖 Agent run: contact 003gK00000ABCDE was UPDATED
-   → Tool call: create_salesforce_task({"contact_id":"003gK...","subject":"Follow up on title change",...})
-   Agent: Created a high-priority follow-up task for the rep about Jane's promotion to VP Engineering.
+🤖 Agent run: Contact 003ak000005v53LAAQ (Jack Rogers) was UPDATED
+   → Tool call: get_salesforce_record({"object_type":"Contact","record_id":"003ak000005v53LAAQ"})
+   → Tool call: query_salesforce({"soql":"SELECT Id, Name, StageName, CloseDate FROM Opportunity WHERE AccountId = '...' AND IsClosed = false"})
+   → Tool call: create_salesforce_task({"object_type":"Contact","related_record_id":"003ak...","subject":"Introductory outreach to Jack Rogers (Director of Facilities)",...})
+   Agent: I created a Normal-priority Task for the sales rep to make introductory outreach...
 ```
 
-Check the Contact in Salesforce — the agent's Task is attached to its activity timeline.
+Check the record in Salesforce — the agent's Task is attached to its activity timeline.
 
 ## How it works
 
@@ -100,7 +102,7 @@ Check the Contact in Salesforce — the agent's Task is attached to its activity
 |---|---|---|
 | Object config | [`nango-integrations/salesforce/objects.ts`](nango-integrations/salesforce/objects.ts) | Single source of truth: which objects and fields to watch |
 | Apex handler | [`salesforce/NangoWebhookNotifier.cls`](salesforce/NangoWebhookNotifier.cls) | Shared logic: change detection (loop-safe), batching (bulk-safe), one `@future(callout=true)` POST per invocation (async-safe) |
-| Trigger template | [`salesforce/NangoRecordTrigger.trigger.tpl`](salesforce/NangoRecordTrigger.trigger.tpl) | 3-line trigger generated per watched object |
+| Trigger template | [`salesforce/NangoRecordTrigger.trigger.tpl`](salesforce/NangoRecordTrigger.trigger.tpl) | Single-statement trigger generated per watched object |
 | Nango sync | [`nango-integrations/salesforce/syncs/records.ts`](nango-integrations/salesforce/syncs/records.ts) | `onWebhook` saves events in real time; hourly `exec` reconciles per object |
 | Provisioning | [`scripts/provision-salesforce.ts`](scripts/provision-salesforce.ts) | Installs the Remote Site Setting, handler class, and all triggers via the Tooling API through Nango's proxy |
 | Webhook receiver | [`src/server.ts`](src/server.ts) | Verifies signatures, acks fast, fetches changed records by cursor |

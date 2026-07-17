@@ -3,7 +3,7 @@
  * Generated from NangoRecordTrigger.trigger.tpl by scripts/provision-salesforce.ts —
  * all the logic lives in NangoWebhookNotifier.notifyChanges().
  */
-trigger Nango{{OBJECT}}Trigger on {{OBJECT}} (after insert, after update) {
+trigger {{TRIGGER_NAME}} on {{OBJECT}} (after insert, after update) {
     NangoWebhookNotifier.notifyChanges(
         '{{OBJECT}}',
         Trigger.new,

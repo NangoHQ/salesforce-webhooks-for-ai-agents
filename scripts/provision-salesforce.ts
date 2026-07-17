@@ -4,8 +4,9 @@
  * the OAuth access token of your existing connection:
  *
  *   1. Remote Site Setting for https://api.nango.dev (allows Apex callouts)
- *   2. NangoWebhookNotifier Apex class (makes the async HTTP callout)
- *   3. NangoContactTrigger Apex trigger (fires on Contact create/update)
+ *   2. NangoWebhookNotifier Apex class (shared handler + async HTTP callout)
+ *   3. One thin Apex trigger per watched object in SALESFORCE_OBJECTS
+ *      (Nango<Object>Trigger, rendered from NangoRecordTrigger.trigger.tpl)
  *
  * This mirrors what a multi-tenant product would run in a Nango
  * `post-connection-creation` event script for every new customer connection.
@@ -84,10 +85,32 @@ function loadApexSource(file: string): string {
         .replaceAll('{{NANGO_CONNECTION_ID}}', env.connectionId);
 }
 
+// Apex identifiers can't contain consecutive underscores, so custom-object
+// API names like Invoice__c are sanitized when composing the trigger name.
+function triggerName(object: string): string {
+    return 'Nango' + object.replace(/__(c|e|mdt)$/i, '').replace(/_/g, '') + 'Trigger';
+}
+
 function renderTrigger(object: string, fields: string[]): string {
     return loadApexSource('NangoRecordTrigger.trigger.tpl')
+        .replaceAll('{{TRIGGER_NAME}}', triggerName(object))
         .replaceAll('{{OBJECT}}', object)
         .replaceAll('{{FIELDS}}', fields.map((f) => `'${f}'`).join(', '));
+}
+
+// Fail fast on typos or stale field names — a bad field would otherwise only
+// surface as a runtime SObjectException in the customer's org.
+async function validateFields(object: string, fields: string[]): Promise<void> {
+    const res = await nango.get({
+        ...proxyDefaults,
+        endpoint: `/services/data/${API_VERSION}/sobjects/${object}/describe`
+    });
+    const available = new Set((res.data.fields ?? []).map((f: any) => f.name));
+    const missing = fields.filter((f) => !available.has(f));
+    if (missing.length > 0) {
+        console.error(`✗ ${object} has no field(s): ${missing.join(', ')}. Fix nango-integrations/salesforce/objects.ts.`);
+        process.exit(1);
+    }
 }
 
 async function ensureRemoteSiteSetting(): Promise<void> {
@@ -146,13 +169,24 @@ async function main() {
     await checkIntegrationProvider();
     await ensureRemoteSiteSetting();
 
+    for (const cfg of SALESFORCE_OBJECTS) {
+        await validateFields(cfg.object, cfg.fields);
+    }
+    console.log('✓ All tracked fields exist on their objects');
+
     // Salesforce refuses to delete an Apex class while deployed code still
     // references it, so remove in reverse dependency order (triggers → class),
-    // then create in forward order (class → triggers). The brief trigger-less
-    // window is fine for a demo: the hourly reconciliation sync catches any
-    // events that occur during it.
-    for (const cfg of SALESFORCE_OBJECTS) {
-        await deleteIfExists('ApexTrigger', `Nango${cfg.object}Trigger`);
+    // then create in forward order (class → triggers). Cleanup is
+    // discovery-driven (not config-driven) so triggers for objects that were
+    // REMOVED from the config don't strand the class and wedge re-runs.
+    // The brief trigger-less window is fine for a demo: the hourly
+    // reconciliation sync catches any events that occur during it.
+    const pipelineTriggers = await toolingQuery<{ Id: string; Name: string }>(
+        "SELECT Id, Name FROM ApexTrigger WHERE Name LIKE 'Nango%Trigger'"
+    );
+    for (const trigger of pipelineTriggers.filter((t) => /^Nango\w+Trigger$/.test(t.Name))) {
+        await toolingDelete('ApexTrigger', trigger.Id);
+        console.log(`  (removed existing ApexTrigger ${trigger.Name})`);
     }
     await deleteIfExists('ApexClass', 'NangoWebhookNotifier');
 
@@ -161,11 +195,11 @@ async function main() {
 
     for (const cfg of SALESFORCE_OBJECTS) {
         await toolingCreate('ApexTrigger', {
-            Name: `Nango${cfg.object}Trigger`,
+            Name: triggerName(cfg.object),
             TableEnumOrId: cfg.object,
             Body: renderTrigger(cfg.object, cfg.fields)
         });
-        console.log(`✓ Deployed Apex trigger Nango${cfg.object}Trigger on ${cfg.object}`);
+        console.log(`✓ Deployed Apex trigger ${triggerName(cfg.object)} on ${cfg.object}`);
     }
 
     console.log(

@@ -146,13 +146,15 @@ async function handleSyncWebhook(payload: any): Promise<void> {
     const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
     console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
 
-    // Bootstrap rule: the agent only reacts to changes that happen AFTER this
-    // app first saw a model. Poll-driven runs with no stored cursor are the
-    // initial snapshot (or a later backfill) — prime the cursor past them
-    // without waking the agent for historical records. Webhook-triggered runs
-    // are always real-time changes, cursor or not.
+    // Bootstrap rule: don't wake the agent for the sync's INITIAL run — that's
+    // the historical snapshot, not a change. Prime the cursor past it instead.
+    // A later no-cursor INCREMENTAL run (e.g. the first Lead ever, arriving
+    // via the hourly poll) is a real change: fetchChangedRecords already
+    // bootstrapped from the run's modifiedAfter, so let the agent process it.
+    // Webhook-triggered runs are always real-time changes.
     const isWebhookRun = payload.syncType === 'WEBHOOK';
-    if (!hasCursor && !isWebhookRun) {
+    const isInitialRun = payload.syncType === 'INITIAL' || payload.checkpoints?.from == null;
+    if (!hasCursor && !isWebhookRun && isInitialRun) {
         advanceCursorPastAll(payload, records);
         console.log(`   Initial sync for ${payload.model}: primed cursor past ${records.length} historical record(s), agent not invoked.`);
         emit('info', { text: `Initial sync: loaded ${records.length} existing ${objectConfig.object} record(s) from Salesforce — the assistant only reacts to changes from now on.` });

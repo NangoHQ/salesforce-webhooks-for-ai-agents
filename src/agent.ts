@@ -201,33 +201,47 @@ export async function runAgentOnRecordChange(record: NangoRecord): Promise<void>
 
     emit('agent-start', { contact: displayName, contactId: record.id, object: objectType, action });
 
-    const messages: MessageParam[] = [
-        {
-            role: 'user',
-            content:
-                `A Salesforce ${objectType} was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
-                `${JSON.stringify({ id: record.id, name: displayName, ...(record['fields'] as object) }, null, 2)}\n\n` +
-                `Decide on an appropriate follow-up and create exactly one Task for the sales rep. ` +
-                `If the record data is too sparse to act on, fetch the full record first.`
-        }
-    ];
+    try {
+        const messages: MessageParam[] = [
+            {
+                role: 'user',
+                content:
+                    `A Salesforce ${objectType} was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
+                    `${JSON.stringify({ id: record.id, name: displayName, ...(record['fields'] as object) }, null, 2)}\n\n` +
+                    `Decide on an appropriate follow-up and create exactly one Task for the sales rep. ` +
+                    `If the record data is too sparse to act on, fetch the full record first.`
+            }
+        ];
 
-    const outcome = await runToolLoop(
-        messages,
-        'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
-            'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.'
-    );
+        const outcome = await runToolLoop(
+            messages,
+            'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
+                'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.'
+        );
 
-    console.log(`   Agent: ${outcome.summary}`);
-    remember(`${objectType} "${displayName}" was ${action.toLowerCase()} → ${outcome.task ? `created task "${outcome.task.subject}"` : outcome.summary.slice(0, 120)}`);
-    emit('agent-activity', {
-        contact: displayName,
-        contactId: record.id,
-        object: objectType,
-        action,
-        summary: outcome.summary,
-        ...(outcome.task ? { task: outcome.task } : {})
-    });
+        console.log(`   Agent: ${outcome.summary}`);
+        remember(`${objectType} "${displayName}" was ${action.toLowerCase()} → ${outcome.task ? `created task "${outcome.task.subject}"` : outcome.summary.slice(0, 120)}`);
+        emit('agent-activity', {
+            contact: displayName,
+            contactId: record.id,
+            object: objectType,
+            action,
+            summary: outcome.summary,
+            ...(outcome.task ? { task: outcome.task } : {})
+        });
+    } catch (err) {
+        // Always resolve the UI's pending card — a run that dies mid-flight
+        // must not leave a spinner orbiting forever. (The record is not
+        // retried automatically: the server advances the cursor past it.)
+        emit('agent-activity', {
+            contact: displayName,
+            contactId: record.id,
+            object: objectType,
+            action,
+            summary: 'Agent run failed — see server logs. This change will not be retried automatically.'
+        });
+        throw err;
+    }
 }
 
 /** One shared chat conversation for the demo UI (in-memory, single session). */

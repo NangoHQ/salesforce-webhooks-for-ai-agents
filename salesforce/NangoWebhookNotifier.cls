@@ -26,8 +26,19 @@ public class NangoWebhookNotifier {
      * Shared trigger handler: diffs tracked fields, batches all changed
      * records of the invocation into ONE payload, and fires ONE async callout.
      * Pass oldList = null for inserts.
+     *
+     * Never throws: a webhook must not be able to abort the user's save.
+     * Failures are logged and reconciled by the hourly polling sync.
      */
     public static void notifyChanges(String objectName, List<SObject> newList, List<SObject> oldList, List<String> trackedFields) {
+        try {
+            notifyChangesUnsafe(objectName, newList, oldList, trackedFields);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Nango webhook notification failed (event dropped; polling will reconcile): ' + e.getMessage());
+        }
+    }
+
+    private static void notifyChangesUnsafe(String objectName, List<SObject> newList, List<SObject> oldList, List<String> trackedFields) {
         // @future can't be called from batch/future contexts, and the @future
         // budget (50 calls/transaction) is capped — skip rather than break
         // someone else's transaction. The polling sync reconciles missed events.
