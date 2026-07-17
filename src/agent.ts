@@ -42,7 +42,14 @@ const tools: Tool[] = [
     }
 ];
 
-async function executeTool(name: string, input: any): Promise<string> {
+interface CreatedTask {
+    id: string;
+    subject: string;
+    priority: string;
+    url?: string;
+}
+
+async function executeTool(name: string, input: any): Promise<{ result: string; task?: CreatedTask }> {
     const proxyDefaults = {
         providerConfigKey: env.integrationId,
         connectionId: env.connectionId
@@ -54,7 +61,7 @@ async function executeTool(name: string, input: any): Promise<string> {
                 ...proxyDefaults,
                 endpoint: `/services/data/${API_VERSION}/sobjects/Contact/${input.contact_id}`
             });
-            return JSON.stringify(res.data);
+            return { result: JSON.stringify(res.data) };
         }
         case 'create_salesforce_task': {
             const res = await nango.post({
@@ -69,36 +76,42 @@ async function executeTool(name: string, input: any): Promise<string> {
                 }
             });
             const instance = await getInstanceUrl();
-            emit('task-created', {
-                taskId: res.data.id,
-                subject: input.subject,
-                ...(instance ? { url: `${instance}/lightning/r/Task/${res.data.id}/view` } : {})
-            });
-            return JSON.stringify(res.data);
+            return {
+                result: JSON.stringify(res.data),
+                task: {
+                    id: res.data.id,
+                    subject: input.subject,
+                    priority: input.priority,
+                    ...(instance ? { url: `${instance}/lightning/r/Task/${res.data.id}/view` } : {})
+                }
+            };
         }
         default:
-            return `Unknown tool: ${name}`;
+            return { result: `Unknown tool: ${name}` };
     }
 }
 
 /**
  * Runs the agent on a single changed contact record. The record arrives fresh
  * from Nango's records cache moments after the change happened in Salesforce.
+ *
+ * Each run is reported to the demo UI as one 'agent-activity' event: which
+ * contact changed, what the assistant decided, and the task it created.
  */
 export async function runAgentOnContactChange(record: NangoRecord): Promise<void> {
     const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
+    const contactName = [record['first_name'], record['last_name']].filter(Boolean).join(' ') || record.id;
     console.log(`\n🤖 Agent run: contact ${record.id} was ${action}`);
-    emit('agent-start', {
-        contact: [record['first_name'], record['last_name']].filter(Boolean).join(' ') || record.id,
-        action
-    });
 
     if (action === 'DELETED') {
         console.log('   Skipping deleted record.');
         return;
     }
 
+    emit('agent-start', { contact: contactName, contactId: record.id, action });
+
     const { _nango_metadata, ...contact } = record;
+    let createdTask: CreatedTask | undefined;
 
     const messages: MessageParam[] = [
         {
@@ -128,7 +141,13 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
             const text = response.content.find((block) => block.type === 'text');
             const summary = text?.type === 'text' ? text.text : '(done)';
             console.log(`   Agent: ${summary}`);
-            emit('agent-done', { text: summary });
+            emit('agent-activity', {
+                contact: contactName,
+                contactId: record.id,
+                action,
+                summary,
+                ...(createdTask ? { task: createdTask } : {})
+            });
             return;
         }
 
@@ -136,17 +155,15 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
         for (const block of response.content) {
             if (block.type !== 'tool_use') continue;
             console.log(`   → Tool call: ${block.name}(${JSON.stringify(block.input)})`);
-            emit('tool-call', {
-                tool: block.name,
-                summary: JSON.stringify(block.input).slice(0, 120)
-            });
             // Surface tool failures to the model as error results instead of
             // crashing the run — Salesforce 4xx errors (deleted record, bad
             // input) are routine and the model can often recover.
             let result: string;
             let isError = false;
             try {
-                result = await executeTool(block.name, block.input);
+                const outcome = await executeTool(block.name, block.input);
+                result = outcome.result;
+                if (outcome.task) createdTask = outcome.task;
             } catch (err: any) {
                 result = err?.response
                     ? `Request failed with status ${err.response.status}: ${JSON.stringify(err.response.data)}`
@@ -154,11 +171,17 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
                 isError = true;
             }
             console.log(`   ← ${result.slice(0, 200)}`);
-            emit('tool-result', { tool: block.name, ok: !isError, summary: result.slice(0, 120) });
             toolResults.push({ type: 'tool_result' as const, tool_use_id: block.id, content: result, is_error: isError });
         }
         messages.push({ role: 'user', content: toolResults });
     }
 
     console.warn('   Agent stopped: max turns reached.');
+    emit('agent-activity', {
+        contact: contactName,
+        contactId: record.id,
+        action,
+        summary: 'Stopped after reaching the turn limit.',
+        ...(createdTask ? { task: createdTask } : {})
+    });
 }

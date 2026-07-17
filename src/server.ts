@@ -54,9 +54,37 @@ function enqueue(key: string, run: () => Promise<void>): void {
     next.catch((err) => console.error('Webhook handling failed:', err));
 }
 
-// Demo UI: live pipeline feed at http://localhost:<port>/
+// Demo UI: a mini "CRM copilot" app at http://localhost:<port>/
 app.get('/', (_req, res) => res.type('html').send(DEMO_PAGE));
 app.get('/events', (_req, res) => subscribe(res));
+
+// Contacts straight from Nango's records cache — the same store the sync
+// keeps fresh in real time. This is what your product would read instead of
+// hitting the Salesforce API on every page load.
+app.get('/api/contacts', async (_req, res) => {
+    try {
+        const { records } = await nango.listRecords({
+            providerConfigKey: env.integrationId,
+            connectionId: env.connectionId,
+            model: MODEL,
+            limit: 100
+        });
+        const contacts = (records as any[])
+            .filter((r) => r._nango_metadata.last_action !== 'DELETED')
+            .map((r) => ({
+                id: r.id,
+                name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.id,
+                title: r.title,
+                email: r.email,
+                phone: r.phone,
+                updatedAt: r._nango_metadata.last_modified_at
+            }))
+            .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+        res.json({ contacts });
+    } catch (err: any) {
+        res.status(500).json({ error: String(err?.response?.data ?? err) });
+    }
+});
 
 // Demo helper: edit a random cached contact's title so the whole pipeline
 // fires without opening Salesforce.
@@ -74,7 +102,11 @@ app.post('/demo/simulate', async (_req, res) => {
             res.status(404).json({ error: 'no cached contacts yet' });
             return;
         }
-        const title = `Demo change at ${new Date().toLocaleTimeString()}`;
+        const TITLES = [
+            'VP of Operations', 'Head of Procurement', 'Director of IT',
+            'Chief Revenue Officer', 'Senior Solutions Architect', 'Head of Partnerships'
+        ];
+        const title = TITLES[Math.floor(Math.random() * TITLES.length)];
         await nango.proxy({
             providerConfigKey: env.integrationId,
             connectionId: env.connectionId,
@@ -82,7 +114,8 @@ app.post('/demo/simulate', async (_req, res) => {
             endpoint: `/services/data/v61.0/sobjects/Contact/${target.id}`,
             data: { Title: title }
         });
-        emit('info', { text: `Simulated: set ${target.first_name} ${target.last_name}'s title to "${title}" in Salesforce. Apex fires in a few seconds…` });
+        const name = [target.first_name, target.last_name].filter(Boolean).join(' ');
+        emit('info', { text: `${name}'s title was changed to "${title}" in Salesforce — waiting for the org to notify us…` });
         res.json({ ok: true, contact: target.id });
     } catch (err: any) {
         res.status(500).json({ error: String(err?.response?.data ?? err) });
@@ -117,7 +150,6 @@ async function handleWebhook(payload: any): Promise<void> {
             // original Salesforce payload instead of (or in addition to) the
             // records cache. We just log it here.
             console.log(`\n📨 Forwarded ${payload.from} webhook:`, JSON.stringify(payload.payload).slice(0, 300));
-            emit('forward-webhook', { eventType: payload.payload?.nango?.eventType });
             return;
 
         case 'auth':
@@ -142,7 +174,7 @@ async function handleSyncWebhook(payload: any): Promise<void> {
     const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
     console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
     if (added + updated + deleted > 0) {
-        emit('sync-webhook', { added, updated, deleted, syncName: payload.syncName });
+        emit('change-detected', { count: added + updated + deleted });
     }
 
     const hasCursor = Boolean(getCursor(payload.connectionId, payload.model));
@@ -165,7 +197,7 @@ async function handleSyncWebhook(payload: any): Promise<void> {
     const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
     console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
     if (records.length > 0) {
-        emit('records-fetched', { count: records.length });
+        emit('contacts-updated', {});
     }
 
     if (isFullSync && !hasCursor) {

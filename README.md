@@ -74,9 +74,14 @@ In the Nango dashboard → **Environment Settings → Webhooks**, set the primar
 
 ### 5. Trigger it
 
-Open **http://localhost:3000** — a live feed of the pipeline. Press **⚡ Simulate a contact change** (or create/edit a Contact in Salesforce yourself) and watch the events stream in: the forwarded Salesforce webhook, the sync notification, the agent waking up, its tool calls, and the created Task with a direct link into Salesforce.
+Open **http://localhost:3000** — a mini "Contact Copilot" app, the shape a real product built on this pipeline would take:
 
-The same events appear in the terminal:
+- **Contacts** — served from Nango's records cache (not the Salesforce API), rows flash and re-sort seconds after a record changes in the org
+- **Assistant activity** — a card per change: which contact changed, what the AI decided and why, and the Task it created with an *Open ↗* link into Salesforce
+
+Press **Simulate a change in Salesforce** (or edit a Contact in Salesforce yourself) and watch the whole loop run.
+
+The pipeline internals appear in the terminal:
 
 ```
 📥 Sync webhook: contacts/SalesforceContact (+0 ~1 -0)
