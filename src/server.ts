@@ -11,6 +11,8 @@ import { env, requireEnv } from './env.js';
 import { nango, fetchChangedRecords } from './nango.js';
 import { getCursor, saveCursor } from './cursor-store.js';
 import { runAgentOnContactChange } from './agent.js';
+import { emit, subscribe } from './events.js';
+import { DEMO_PAGE } from './ui.js';
 
 // Fail fast at startup instead of failing on the first webhook/agent run.
 requireEnv('NANGO_WEBHOOK_SIGNING_KEY');
@@ -52,6 +54,41 @@ function enqueue(key: string, run: () => Promise<void>): void {
     next.catch((err) => console.error('Webhook handling failed:', err));
 }
 
+// Demo UI: live pipeline feed at http://localhost:<port>/
+app.get('/', (_req, res) => res.type('html').send(DEMO_PAGE));
+app.get('/events', (_req, res) => subscribe(res));
+
+// Demo helper: edit a random cached contact's title so the whole pipeline
+// fires without opening Salesforce.
+app.post('/demo/simulate', async (_req, res) => {
+    try {
+        const { records } = await nango.listRecords({
+            providerConfigKey: env.integrationId,
+            connectionId: env.connectionId,
+            model: MODEL,
+            limit: 50
+        });
+        const alive = (records as any[]).filter((r) => r._nango_metadata.last_action !== 'DELETED');
+        const target = alive[Math.floor(Math.random() * alive.length)];
+        if (!target) {
+            res.status(404).json({ error: 'no cached contacts yet' });
+            return;
+        }
+        const title = `Demo change at ${new Date().toLocaleTimeString()}`;
+        await nango.proxy({
+            providerConfigKey: env.integrationId,
+            connectionId: env.connectionId,
+            method: 'PATCH',
+            endpoint: `/services/data/v61.0/sobjects/Contact/${target.id}`,
+            data: { Title: title }
+        });
+        emit('info', { text: `Simulated: set ${target.first_name} ${target.last_name}'s title to "${title}" in Salesforce. Apex fires in a few seconds…` });
+        res.json({ ok: true, contact: target.id });
+    } catch (err: any) {
+        res.status(500).json({ error: String(err?.response?.data ?? err) });
+    }
+});
+
 app.post('/webhooks/nango', (req, res) => {
     const rawBody = (req as RequestWithRawBody).rawBody ?? '';
     // Verify authenticity with the webhook signing key (NOT the API secret key).
@@ -80,6 +117,7 @@ async function handleWebhook(payload: any): Promise<void> {
             // original Salesforce payload instead of (or in addition to) the
             // records cache. We just log it here.
             console.log(`\n📨 Forwarded ${payload.from} webhook:`, JSON.stringify(payload.payload).slice(0, 300));
+            emit('forward-webhook', { eventType: payload.payload?.nango?.eventType });
             return;
 
         case 'auth':
@@ -103,6 +141,9 @@ async function handleSyncWebhook(payload: any): Promise<void> {
 
     const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
     console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
+    if (added + updated + deleted > 0) {
+        emit('sync-webhook', { added, updated, deleted, syncName: payload.syncName });
+    }
 
     const hasCursor = Boolean(getCursor(payload.connectionId, payload.model));
 
@@ -123,6 +164,9 @@ async function handleSyncWebhook(payload: any): Promise<void> {
 
     const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
     console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
+    if (records.length > 0) {
+        emit('records-fetched', { count: records.length });
+    }
 
     if (isFullSync && !hasCursor) {
         advanceCursorPastAll(payload, records);

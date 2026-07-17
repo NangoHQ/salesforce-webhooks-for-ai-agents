@@ -74,7 +74,9 @@ In the Nango dashboard → **Environment Settings → Webhooks**, set the primar
 
 ### 5. Trigger it
 
-Create or edit a Contact in Salesforce. Within a few seconds:
+Open **http://localhost:3000** — a live feed of the pipeline. Press **⚡ Simulate a contact change** (or create/edit a Contact in Salesforce yourself) and watch the events stream in: the forwarded Salesforce webhook, the sync notification, the agent waking up, its tool calls, and the created Task with a direct link into Salesforce.
+
+The same events appear in the terminal:
 
 ```
 📥 Sync webhook: contacts/SalesforceContact (+0 ~1 -0)

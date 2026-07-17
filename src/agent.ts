@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Tool, MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { env } from './env.js';
-import { nango, type NangoRecord } from './nango.js';
+import { nango, getInstanceUrl, type NangoRecord } from './nango.js';
+import { emit } from './events.js';
 
 const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
 const MODEL = process.env['AGENT_MODEL'] ?? 'claude-sonnet-5';
@@ -67,6 +68,12 @@ async function executeTool(name: string, input: any): Promise<string> {
                     Status: 'Not Started'
                 }
             });
+            const instance = await getInstanceUrl();
+            emit('task-created', {
+                taskId: res.data.id,
+                subject: input.subject,
+                ...(instance ? { url: `${instance}/lightning/r/Task/${res.data.id}/view` } : {})
+            });
             return JSON.stringify(res.data);
         }
         default:
@@ -81,6 +88,10 @@ async function executeTool(name: string, input: any): Promise<string> {
 export async function runAgentOnContactChange(record: NangoRecord): Promise<void> {
     const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
     console.log(`\n🤖 Agent run: contact ${record.id} was ${action}`);
+    emit('agent-start', {
+        contact: [record['first_name'], record['last_name']].filter(Boolean).join(' ') || record.id,
+        action
+    });
 
     if (action === 'DELETED') {
         console.log('   Skipping deleted record.');
@@ -115,7 +126,9 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
 
         if (response.stop_reason !== 'tool_use') {
             const text = response.content.find((block) => block.type === 'text');
-            console.log(`   Agent: ${text?.type === 'text' ? text.text : '(done)'}`);
+            const summary = text?.type === 'text' ? text.text : '(done)';
+            console.log(`   Agent: ${summary}`);
+            emit('agent-done', { text: summary });
             return;
         }
 
@@ -123,6 +136,10 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
         for (const block of response.content) {
             if (block.type !== 'tool_use') continue;
             console.log(`   → Tool call: ${block.name}(${JSON.stringify(block.input)})`);
+            emit('tool-call', {
+                tool: block.name,
+                summary: JSON.stringify(block.input).slice(0, 120)
+            });
             // Surface tool failures to the model as error results instead of
             // crashing the run — Salesforce 4xx errors (deleted record, bad
             // input) are routine and the model can often recover.
@@ -137,6 +154,7 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
                 isError = true;
             }
             console.log(`   ← ${result.slice(0, 200)}`);
+            emit('tool-result', { tool: block.name, ok: !isError, summary: result.slice(0, 120) });
             toolResults.push({ type: 'tool_result' as const, tool_use_id: block.id, content: result, is_error: isError });
         }
         messages.push({ role: 'user', content: toolResults });

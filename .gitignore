@@ -6,3 +6,6 @@ build/
 .DS_Store
 nango-integrations/.nango/
 nango-integrations/build/
+
+# Article draft (published separately, not part of the sample repo)
+ARTICLE.md
