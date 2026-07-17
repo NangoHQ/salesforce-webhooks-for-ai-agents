@@ -123,9 +123,21 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
         for (const block of response.content) {
             if (block.type !== 'tool_use') continue;
             console.log(`   → Tool call: ${block.name}(${JSON.stringify(block.input)})`);
-            const result = await executeTool(block.name, block.input);
+            // Surface tool failures to the model as error results instead of
+            // crashing the run — Salesforce 4xx errors (deleted record, bad
+            // input) are routine and the model can often recover.
+            let result: string;
+            let isError = false;
+            try {
+                result = await executeTool(block.name, block.input);
+            } catch (err: any) {
+                result = err?.response
+                    ? `Request failed with status ${err.response.status}: ${JSON.stringify(err.response.data)}`
+                    : String(err);
+                isError = true;
+            }
             console.log(`   ← ${result.slice(0, 200)}`);
-            toolResults.push({ type: 'tool_result' as const, tool_use_id: block.id, content: result });
+            toolResults.push({ type: 'tool_result' as const, tool_use_id: block.id, content: result, is_error: isError });
         }
         messages.push({ role: 'user', content: toolResults });
     }

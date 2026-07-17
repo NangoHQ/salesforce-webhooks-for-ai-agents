@@ -21,7 +21,7 @@ import { env } from '../src/env.js';
 const API_VERSION = 'v61.0';
 const NANGO_HOST = 'https://api.nango.dev';
 
-const nango = new Nango({ secretKey: env.nangoSecretKey });
+const nango = new Nango({ apiKey: env.nangoSecretKey });
 
 const proxyDefaults = {
     providerConfigKey: env.integrationId,
@@ -92,11 +92,13 @@ async function ensureRemoteSiteSetting(): Promise<void> {
         return;
     }
     try {
+        // The Tooling API sobject for Remote Site Settings is RemoteProxy.
+        // (Its "disable protocol security" flag is called ProtocolMismatch and
+        // defaults to false on create, so we don't need to set it.)
         await toolingCreate('RemoteProxy', {
             SiteName: 'Nango',
             EndpointUrl: NANGO_HOST,
-            IsActive: true,
-            DisableProtocolSecurity: false
+            IsActive: true
         });
         console.log('✓ Created Remote Site Setting "Nango" → https://api.nango.dev');
     } catch (err: any) {
@@ -110,26 +112,12 @@ async function ensureRemoteSiteSetting(): Promise<void> {
     }
 }
 
-async function upsertApexClass(name: string, body: string): Promise<void> {
-    const existing = await toolingQuery(`SELECT Id FROM ApexClass WHERE Name = '${name}'`);
-    // The Tooling API can't update an ApexClass body directly (that requires a
-    // MetadataContainer dance), so delete + recreate for idempotency.
+async function deleteIfExists(sobject: 'ApexClass' | 'ApexTrigger', name: string): Promise<void> {
+    const existing = await toolingQuery<{ Id: string }>(`SELECT Id FROM ${sobject} WHERE Name = '${name}'`);
     for (const record of existing) {
-        await toolingDelete('ApexClass', record.Id);
-        console.log(`  (replaced existing Apex class ${name})`);
+        await toolingDelete(sobject, record.Id);
+        console.log(`  (removed existing ${sobject} ${name})`);
     }
-    await toolingCreate('ApexClass', { Name: name, Body: body });
-    console.log(`✓ Deployed Apex class ${name}`);
-}
-
-async function upsertApexTrigger(name: string, sobject: string, body: string): Promise<void> {
-    const existing = await toolingQuery(`SELECT Id FROM ApexTrigger WHERE Name = '${name}'`);
-    for (const record of existing) {
-        await toolingDelete('ApexTrigger', record.Id);
-        console.log(`  (replaced existing Apex trigger ${name})`);
-    }
-    await toolingCreate('ApexTrigger', { Name: name, TableEnumOrId: sobject, Body: body });
-    console.log(`✓ Deployed Apex trigger ${name} on ${sobject}`);
 }
 
 async function main() {
@@ -146,8 +134,23 @@ async function main() {
 
     await checkIntegrationProvider();
     await ensureRemoteSiteSetting();
-    await upsertApexClass('NangoWebhookNotifier', loadApexSource('NangoWebhookNotifier.cls'));
-    await upsertApexTrigger('NangoContactTrigger', 'Contact', loadApexSource('NangoContactTrigger.trigger'));
+
+    // Salesforce refuses to delete an Apex class while deployed code still
+    // references it, so remove in reverse dependency order (trigger → class),
+    // then create in forward order (class → trigger). The brief trigger-less
+    // window is fine for a demo: the hourly reconciliation sync catches any
+    // events that occur during it.
+    await deleteIfExists('ApexTrigger', 'NangoContactTrigger');
+    await deleteIfExists('ApexClass', 'NangoWebhookNotifier');
+
+    await toolingCreate('ApexClass', { Name: 'NangoWebhookNotifier', Body: loadApexSource('NangoWebhookNotifier.cls') });
+    console.log('✓ Deployed Apex class NangoWebhookNotifier');
+    await toolingCreate('ApexTrigger', {
+        Name: 'NangoContactTrigger',
+        TableEnumOrId: 'Contact',
+        Body: loadApexSource('NangoContactTrigger.trigger')
+    });
+    console.log('✓ Deployed Apex trigger NangoContactTrigger on Contact');
 
     console.log(
         '\nDone! Create or edit a Contact in Salesforce, then check the Logs tab\n' +

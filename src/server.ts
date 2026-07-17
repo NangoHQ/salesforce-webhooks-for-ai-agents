@@ -7,18 +7,55 @@
  * run the AI agent on each change.
  */
 import express from 'express';
-import { env } from './env.js';
+import { env, requireEnv } from './env.js';
 import { nango, fetchChangedRecords } from './nango.js';
+import { getCursor, saveCursor } from './cursor-store.js';
 import { runAgentOnContactChange } from './agent.js';
 
+// Fail fast at startup instead of failing on the first webhook/agent run.
+requireEnv('NANGO_WEBHOOK_SIGNING_KEY');
+requireEnv('ANTHROPIC_API_KEY');
+
 const app = express();
-app.use(express.json());
+
+// Keep the raw body: signature verification hashes the exact bytes Nango
+// sent — verifying the re-serialized parsed object would not match.
+app.use(
+    express.json({
+        verify: (req, _res, buf) => {
+            (req as RequestWithRawBody).rawBody = buf.toString('utf8');
+        }
+    })
+);
+
+type RequestWithRawBody = express.Request & { rawBody?: string };
 
 const MODEL = 'SalesforceContact'; // must match the model name in the Nango sync
 
+// A bulk edit (Data Loader, mass update) can land hundreds of changes in one
+// webhook; don't turn each one into an agent conversation.
+const MAX_AGENT_RUNS_PER_WEBHOOK = 10;
+
+// Serialize webhook processing per (connection, model): two overlapping
+// handlers would otherwise read the same cursor and process the same records
+// twice (duplicate agent runs → duplicate Salesforce Tasks).
+const queues = new Map<string, Promise<void>>();
+function enqueue(key: string, run: () => Promise<void>): void {
+    const prev = queues.get(key) ?? Promise.resolve();
+    const next = prev
+        .catch(() => {}) // a failed run must not block later runs
+        .then(run);
+    queues.set(key, next);
+    next.finally(() => {
+        if (queues.get(key) === next) queues.delete(key);
+    }).catch(() => {});
+    next.catch((err) => console.error('Webhook handling failed:', err));
+}
+
 app.post('/webhooks/nango', (req, res) => {
+    const rawBody = (req as RequestWithRawBody).rawBody ?? '';
     // Verify authenticity with the webhook signing key (NOT the API secret key).
-    if (!nango.verifyIncomingWebhookRequest(req.body, req.headers as Record<string, string>)) {
+    if (!nango.verifyIncomingWebhookRequest(rawBody, req.headers as Record<string, unknown>)) {
         console.warn('Rejected webhook with invalid signature');
         res.status(401).send('invalid signature');
         return;
@@ -27,30 +64,16 @@ app.post('/webhooks/nango', (req, res) => {
     // Ack immediately: Nango times out after 20s and only retries twice.
     res.status(200).json({ ok: true });
 
-    handleWebhook(req.body).catch((err) => console.error('Webhook handling failed:', err));
+    const payload = req.body;
+    const key = payload?.type === 'sync' ? `${payload.connectionId}:${payload.model}` : 'other';
+    enqueue(key, () => handleWebhook(payload));
 });
 
 async function handleWebhook(payload: any): Promise<void> {
     switch (payload.type) {
-        case 'sync': {
-            if (!payload.success) {
-                console.error(`Sync ${payload.syncName} failed:`, payload.error);
-                return;
-            }
-            if (payload.model !== MODEL) return;
-
-            const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
-            console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
-            if (added + updated + deleted === 0) return;
-
-            const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
-            console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
-
-            for (const record of records) {
-                await runAgentOnContactChange(record);
-            }
+        case 'sync':
+            await handleSyncWebhook(payload);
             return;
-        }
 
         case 'forward':
             // Raw provider webhook forwarded by Nango — useful if you want the
@@ -68,6 +91,71 @@ async function handleWebhook(payload: any): Promise<void> {
         default:
             // Nango adds new webhook types over time — ignore unknown ones.
             return;
+    }
+}
+
+async function handleSyncWebhook(payload: any): Promise<void> {
+    if (!payload.success) {
+        console.error(`Sync ${payload.syncName} failed:`, payload.error);
+        return;
+    }
+    if (payload.model !== MODEL) return;
+
+    const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
+    console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
+
+    const hasCursor = Boolean(getCursor(payload.connectionId, payload.model));
+
+    // Empty syncs still matter once we have a cursor: Nango only retries
+    // webhook delivery twice, so a webhook missed while this app was down
+    // leaves records in the cache past our cursor. A cursor-based fetch is a
+    // cheap no-op when nothing is pending and drains missed records otherwise.
+    // Only skip in the no-cursor bootstrap case, where fetching without an
+    // anchor could pull the entire historical dataset.
+    if (added + updated + deleted === 0 && !hasCursor) return;
+
+    // The sync's first-ever run (autoStart) fetches ALL historical contacts.
+    // Prime the cursor past them, but don't wake the agent for records that
+    // predate this pipeline. Webhook-triggered runs never count as full syncs,
+    // even though they may run before the first poll saves a checkpoint.
+    const isWebhookRun = payload.syncType === 'WEBHOOK';
+    const isFullSync = !isWebhookRun && (payload.checkpoints?.from == null || payload.syncType === 'INITIAL');
+
+    const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
+    console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
+
+    if (isFullSync && !hasCursor) {
+        advanceCursorPastAll(payload, records);
+        console.log(`   Initial/full sync: primed cursor past ${records.length} historical contact(s), agent not invoked.`);
+        return;
+    }
+
+    if (records.length > MAX_AGENT_RUNS_PER_WEBHOOK) {
+        advanceCursorPastAll(payload, records);
+        console.warn(
+            `   ${records.length} changes in one webhook (bulk edit or backlog?) — ` +
+                `skipping agent runs (cap: ${MAX_AGENT_RUNS_PER_WEBHOOK}). Raise MAX_AGENT_RUNS_PER_WEBHOOK if intended.`
+        );
+        return;
+    }
+
+    for (const record of records) {
+        try {
+            await runAgentOnContactChange(record);
+        } catch (err) {
+            // Advance past failed records anyway: a poison record must not
+            // wedge the pipeline. The trade-off (this record's agent run is
+            // lost) fits the demo; queue a retry in production instead.
+            console.error(`   Agent run failed for contact ${record.id}:`, err);
+        }
+        saveCursor(payload.connectionId, payload.model, record._nango_metadata.cursor);
+    }
+}
+
+function advanceCursorPastAll(payload: any, records: { _nango_metadata: { cursor: string } }[]): void {
+    const last = records[records.length - 1];
+    if (last) {
+        saveCursor(payload.connectionId, payload.model, last._nango_metadata.cursor);
     }
 }
 

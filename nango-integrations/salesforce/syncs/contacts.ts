@@ -20,15 +20,14 @@ type SalesforceContact = z.infer<typeof ContactSchema>;
  * 2. Reconciliation: Apex `@future` callouts are at-most-once (no retries), so
  *    an hourly incremental poll (`exec`) catches anything the webhook missed.
  *
- * Every batchSave triggers a `type: "sync"` webhook from Nango to your app.
+ * Every batchSave that changes records triggers a `type: "sync"` webhook from
+ * Nango to your app.
  */
 const sync = createSync({
     description: 'Salesforce contacts in real time: Apex webhook events + hourly polling reconciliation',
     version: '1.0.0',
-    endpoints: [{ method: 'GET', path: '/salesforce/contacts', group: 'Contacts' }],
     frequency: 'every hour',
     autoStart: true,
-    syncType: 'incremental',
 
     // Must match the eventType values sent by the Apex trigger.
     webhookSubscriptions: ['contact.created', 'contact.updated'],
@@ -52,8 +51,12 @@ const sync = createSync({
 
         let query = 'SELECT Id, FirstName, LastName, Email, Title, Phone, LastModifiedDate FROM Contact';
         if (checkpoint) {
-            // Normalized to ISO-8601 UTC ("Z"), which is a valid SOQL datetime literal.
-            query += ` WHERE LastModifiedDate > ${checkpoint.lastModifiedISO}`;
+            // Inclusive (>=) on purpose: LastModifiedDate has second
+            // granularity, so several records can share the checkpoint's
+            // timestamp; a strict > would skip the ones a crashed run didn't
+            // reach. Re-fetched unchanged records hash identically in the
+            // records cache, so they produce no spurious change events.
+            query += ` WHERE LastModifiedDate >= ${checkpoint.lastModifiedISO}`;
         }
         query += ' ORDER BY LastModifiedDate ASC';
 
@@ -84,20 +87,41 @@ const sync = createSync({
     // with an eventType matching webhookSubscriptions above.
     onWebhook: async (nango, payload) => {
         // The Apex trigger sends: { nango: { connectionId, eventType }, data: [...records] }
-        // Depending on SDK version the body may arrive wrapped under `payload.body`.
-        const body: any = payload && typeof payload === 'object' && 'body' in (payload as any) ? (payload as any).body : payload;
+        // Nango's runner passes the raw parsed POST body as `payload` — it is
+        // not wrapped under `payload.body` (one docs page suggests otherwise;
+        // the runner source and live behavior agree on the raw shape).
+        const body = payload as { nango?: { eventType?: string }; data?: Record<string, any>[] | Record<string, any> };
 
-        const raw = body?.['data'];
-        const records: Record<string, any>[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        const raw = body.data;
+        const incoming: Record<string, any>[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
 
-        if (records.length === 0) {
+        if (incoming.length === 0) {
             await nango.log('Webhook received but no records in payload', { level: 'warn' });
             return;
         }
 
-        const contacts = records.map(mapContact);
-        await nango.batchSave(contacts, 'SalesforceContact');
-        await nango.log(`Saved ${contacts.length} contact(s) from webhook (${body?.['nango']?.['eventType']})`);
+        const contacts = incoming.map(mapContact);
+
+        // Salesforce doesn't guarantee @future execution order: two rapid edits
+        // can deliver the older payload second. Drop anything strictly older
+        // than what's already cached (strictly: rapid edits can share a
+        // same-second timestamp, and <= would drop the genuinely newer one).
+        const cached = await nango.getRecordsByIds<string, SalesforceContact>(
+            contacts.map((c) => c.id),
+            'SalesforceContact'
+        );
+        const fresh = contacts.filter((c) => {
+            const existing = cached.get(c.id);
+            return !existing || new Date(c.last_modified_date) >= new Date(existing.last_modified_date);
+        });
+
+        if (fresh.length === 0) {
+            await nango.log('Webhook payload was older than cached records; skipped');
+            return;
+        }
+
+        await nango.batchSave(fresh, 'SalesforceContact');
+        await nango.log(`Saved ${fresh.length} contact(s) from webhook (${body.nango?.eventType ?? 'unknown event'})`);
     }
 });
 
@@ -111,6 +135,9 @@ function mapContact(record: Record<string, any>): SalesforceContact {
         phone: record['Phone'] ?? null,
         // Salesforce returns "+0000" offsets, which are not valid SOQL datetime
         // literals — normalize to "Z" so checkpoints can be used in queries.
+        // (The Apex path already serializes as "Z"; both paths must produce
+        // byte-identical records so the cache's hash comparison sees polled
+        // re-fetches of webhook-delivered records as unchanged.)
         last_modified_date: new Date(record['LastModifiedDate']).toISOString()
     };
 }

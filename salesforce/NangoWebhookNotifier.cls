@@ -14,6 +14,12 @@ public class NangoWebhookNotifier {
     // right connection by reading this value from the payload.
     public static final String CONNECTION_ID = '{{NANGO_CONNECTION_ID}}';
 
+    // Case-sensitive string comparison. Apex's == / != on Strings is
+    // case-insensitive, which would treat case-only edits as "no change".
+    public static Boolean differs(String a, String b) {
+        return a == null ? b != null : !a.equals(b);
+    }
+
     @future(callout=true)
     public static void notify(String payload) {
         HttpRequest req = new HttpRequest();

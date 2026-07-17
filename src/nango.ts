@@ -1,10 +1,11 @@
 import { Nango } from '@nangohq/node';
 import { env } from './env.js';
-import { getCursor, saveCursor } from './cursor-store.js';
+import { getCursor } from './cursor-store.js';
 
 export const nango = new Nango({
-    secretKey: env.nangoSecretKey,
-    // Used by verifyIncomingWebhookRequest; falls back to the secret key if unset.
+    apiKey: env.nangoSecretKey,
+    // Signs webhooks Nango sends to this app. Distinct from the API key —
+    // verification silently fails if you mix them up.
     ...(env.nangoWebhookSigningKey ? { webhookSigningKey: env.nangoWebhookSigningKey } : {})
 });
 
@@ -22,13 +23,16 @@ export interface NangoRecord {
 
 /**
  * Fetches all records changed since the last processed cursor for this
- * (connection, model) pair, paginating until next_cursor is null, and
- * persists the new cursor for the next webhook.
+ * (connection, model) pair, paginating until next_cursor is null.
+ *
+ * The caller is responsible for persisting each record's cursor
+ * (`_nango_metadata.cursor`) as it finishes processing it — saving the cursor
+ * here, before processing, would silently skip records if processing fails.
  *
  * On the very first webhook there is no stored cursor yet — without one,
  * listRecords would return the entire historical dataset. We bootstrap with
- * the webhook's `modifiedAfter` timestamp so the agent only sees the records
- * from this sync run onward.
+ * the webhook's `modifiedAfter` timestamp so only records from this sync run
+ * onward are returned.
  */
 export async function fetchChangedRecords(
     connectionId: string,
@@ -54,8 +58,5 @@ export async function fetchChangedRecords(
         cursor = res.next_cursor;
     }
 
-    if (records.length > 0) {
-        saveCursor(connectionId, model, records[records.length - 1]._nango_metadata.cursor);
-    }
     return records;
 }

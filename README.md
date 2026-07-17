@@ -36,7 +36,20 @@ cp .env.example .env
 
 Fill in `.env` (each variable documents where to find its value in the Nango dashboard).
 
-### 2. Provision the Salesforce org
+### 2. Deploy the Nango sync
+
+```bash
+cd nango-integrations
+npm install
+cp .env.example .env   # set NANGO_SECRET_KEY_DEV
+npx nango deploy dev
+```
+
+This deploys [`salesforce/syncs/contacts.ts`](nango-integrations/salesforce/syncs/contacts.ts): webhook events land in `onWebhook` within seconds; the hourly `exec` poll reconciles via checkpoints.
+
+The sync starts automatically and its **first run fetches every existing contact** — that's why this step comes before pointing webhooks at your app (the server also guards against full-sync floods, but ordering makes it safe by construction).
+
+### 3. Provision the Salesforce org
 
 ```bash
 npm run provision
@@ -49,17 +62,6 @@ This installs everything Salesforce-side through Nango's proxy using your existi
 3. The **`NangoContactTrigger`** Apex trigger ([source](salesforce/NangoContactTrigger.trigger))
 
 > In a multi-tenant product you'd run this same logic in a Nango [`post-connection-creation` event script](https://nango.dev/docs/guides/functions/event-functions) so every new customer connection gets provisioned automatically.
-
-### 3. Deploy the Nango sync
-
-```bash
-cd nango-integrations
-npm install
-cp .env.example .env   # set NANGO_SECRET_KEY_DEV
-npx nango deploy dev
-```
-
-This deploys [`salesforce/syncs/contacts.ts`](nango-integrations/salesforce/syncs/contacts.ts): webhook events land in `onWebhook` within seconds; the hourly `exec` poll reconciles via checkpoints.
 
 ### 4. Point Nango webhooks at your app
 
@@ -107,6 +109,8 @@ The routing contract: the Apex payload's `nango.connectionId` tells Nango which 
 | App receives nothing | Webhook URL not set in Environment Settings, or tunnel died |
 | `401 invalid signature` | Verify with the **webhook signing key** (Environment Settings → Webhooks), not the API secret key |
 | Agent re-triggers itself | The trigger only fires on tracked-field changes; Task creation doesn't touch the Contact. Keep that guard if you extend the trigger |
+| Bulk edit produced no agent runs | Intentional: more than `MAX_AGENT_RUNS_PER_WEBHOOK` (10) changes in one webhook skips per-record agent runs to avoid CRM noise and API spend. Raise the cap in `src/server.ts` if you want them |
+| Agent ran on old/historical contacts | Shouldn't happen: the server primes the cursor past the sync's initial full run without invoking the agent. If you re-deploy the sync with a cache reset, the same guard applies |
 
 ## Learn more
 
