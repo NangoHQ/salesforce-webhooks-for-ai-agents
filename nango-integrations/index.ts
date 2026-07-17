@@ -1,1 +1,1 @@
-import './salesforce/syncs/contacts.js';
+import './salesforce/syncs/records.js';

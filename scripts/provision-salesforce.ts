@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Nango } from '@nangohq/node';
 import { env } from '../src/env.js';
+import { SALESFORCE_OBJECTS } from '../nango-integrations/salesforce/objects.js';
 
 const API_VERSION = 'v61.0';
 const NANGO_HOST = 'https://api.nango.dev';
@@ -83,6 +84,12 @@ function loadApexSource(file: string): string {
         .replaceAll('{{NANGO_CONNECTION_ID}}', env.connectionId);
 }
 
+function renderTrigger(object: string, fields: string[]): string {
+    return loadApexSource('NangoRecordTrigger.trigger.tpl')
+        .replaceAll('{{OBJECT}}', object)
+        .replaceAll('{{FIELDS}}', fields.map((f) => `'${f}'`).join(', '));
+}
+
 async function ensureRemoteSiteSetting(): Promise<void> {
     const existing = await toolingQuery(
         `SELECT Id, SiteName, EndpointUrl FROM RemoteProxy WHERE EndpointUrl = '${NANGO_HOST}'`
@@ -140,21 +147,26 @@ async function main() {
     await ensureRemoteSiteSetting();
 
     // Salesforce refuses to delete an Apex class while deployed code still
-    // references it, so remove in reverse dependency order (trigger → class),
-    // then create in forward order (class → trigger). The brief trigger-less
+    // references it, so remove in reverse dependency order (triggers → class),
+    // then create in forward order (class → triggers). The brief trigger-less
     // window is fine for a demo: the hourly reconciliation sync catches any
     // events that occur during it.
-    await deleteIfExists('ApexTrigger', 'NangoContactTrigger');
+    for (const cfg of SALESFORCE_OBJECTS) {
+        await deleteIfExists('ApexTrigger', `Nango${cfg.object}Trigger`);
+    }
     await deleteIfExists('ApexClass', 'NangoWebhookNotifier');
 
     await toolingCreate('ApexClass', { Name: 'NangoWebhookNotifier', Body: loadApexSource('NangoWebhookNotifier.cls') });
     console.log('✓ Deployed Apex class NangoWebhookNotifier');
-    await toolingCreate('ApexTrigger', {
-        Name: 'NangoContactTrigger',
-        TableEnumOrId: 'Contact',
-        Body: loadApexSource('NangoContactTrigger.trigger')
-    });
-    console.log('✓ Deployed Apex trigger NangoContactTrigger on Contact');
+
+    for (const cfg of SALESFORCE_OBJECTS) {
+        await toolingCreate('ApexTrigger', {
+            Name: `Nango${cfg.object}Trigger`,
+            TableEnumOrId: cfg.object,
+            Body: renderTrigger(cfg.object, cfg.fields)
+        });
+        console.log(`✓ Deployed Apex trigger Nango${cfg.object}Trigger on ${cfg.object}`);
+    }
 
     console.log(
         '\nDone! Create or edit a Contact in Salesforce, then check the Logs tab\n' +

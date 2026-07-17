@@ -2,7 +2,9 @@
 
 Trigger an AI agent the moment a record changes in Salesforce — no polling loops, no streaming-API subscriber to babysit.
 
-Salesforce has no native webhooks. This repo builds them with an Apex trigger that POSTs record changes to [Nango](https://nango.dev), which routes them to the right connection, keeps a records cache fresh in real time, and sends your app a signed webhook. Your app then runs a Claude agent that reacts to the change and writes back to Salesforce (it creates a follow-up Task) through Nango's proxy.
+Salesforce has no native webhooks. This repo builds them with Apex triggers that POST record changes to [Nango](https://nango.dev), which routes them to the right connection, keeps a records cache fresh in real time, and sends your app a signed webhook. Your app then runs a Claude agent that reacts to the change and writes back to Salesforce (it creates a follow-up Task) through Nango's proxy.
+
+Out of the box it watches **Contacts, Leads, Accounts, and Opportunities** — one config file ([`nango-integrations/salesforce/objects.ts`](nango-integrations/salesforce/objects.ts)) drives the Apex provisioning, the Nango sync, and the app, so adding another object (including custom objects) is a single config entry. Tasks are deliberately excluded: the agent *writes* Tasks, and subscribing to the object your agent writes to makes it react to its own output.
 
 ```
 Salesforce org                Nango                          Your app
@@ -45,9 +47,9 @@ cp .env.example .env   # set NANGO_SECRET_KEY_DEV
 npx nango deploy dev
 ```
 
-This deploys [`salesforce/syncs/contacts.ts`](nango-integrations/salesforce/syncs/contacts.ts): webhook events land in `onWebhook` within seconds; the hourly `exec` poll reconciles via checkpoints.
+This deploys [`salesforce/syncs/records.ts`](nango-integrations/salesforce/syncs/records.ts): webhook events for every watched object land in `onWebhook` within seconds; the hourly `exec` poll reconciles each object via per-object checkpoints.
 
-The sync starts automatically and its **first run fetches every existing contact** — that's why this step comes before pointing webhooks at your app (the server also guards against full-sync floods, but ordering makes it safe by construction).
+The sync starts automatically and its **first run fetches every existing record of every watched object** — that's why this step comes before pointing webhooks at your app (the server also guards against full-sync floods, but ordering makes it safe by construction).
 
 ### 3. Provision the Salesforce org
 
@@ -58,8 +60,8 @@ npm run provision
 This installs everything Salesforce-side through Nango's proxy using your existing connection's OAuth token — no Salesforce CLI, no Setup UI:
 
 1. A **Remote Site Setting** allowing callouts to `https://api.nango.dev`
-2. The **`NangoWebhookNotifier`** Apex class ([source](salesforce/NangoWebhookNotifier.cls))
-3. The **`NangoContactTrigger`** Apex trigger ([source](salesforce/NangoContactTrigger.trigger))
+2. The **`NangoWebhookNotifier`** Apex class ([source](salesforce/NangoWebhookNotifier.cls)) — the shared handler: change detection, batching, async callout
+3. One thin **Apex trigger per watched object** (generated from [this template](salesforce/NangoRecordTrigger.trigger.tpl)): `NangoContactTrigger`, `NangoLeadTrigger`, `NangoAccountTrigger`, `NangoOpportunityTrigger`
 
 > In a multi-tenant product you'd run this same logic in a Nango [`post-connection-creation` event script](https://nango.dev/docs/guides/functions/event-functions) so every new customer connection gets provisioned automatically.
 
@@ -74,12 +76,12 @@ In the Nango dashboard → **Environment Settings → Webhooks**, set the primar
 
 ### 5. Trigger it
 
-Open **http://localhost:3000** — a mini "Contact Copilot" app, the shape a real product built on this pipeline would take:
+Open **http://localhost:3000** — a mini "CRM Copilot" app, the shape a real product built on this pipeline would take:
 
-- **Contacts** — served from Nango's records cache (not the Salesforce API), rows flash and re-sort seconds after a record changes in the org
-- **Assistant activity** — a card per change: which contact changed, what the AI decided and why, and the Task it created with an *Open ↗* link into Salesforce
+- **Records** — contacts, leads, accounts, and opportunities served from Nango's records cache (not the Salesforce API); rows flash and re-sort seconds after a record changes in the org
+- **Assistant activity** — a card per change: which record changed, what the AI decided and why, and the Task it created with an *Open ↗* link into Salesforce
 
-Press **Simulate a change in Salesforce** (or edit a Contact in Salesforce yourself) and watch the whole loop run.
+Press **Simulate a change in Salesforce** (or edit any watched record in Salesforce yourself) and watch the whole loop run.
 
 The pipeline internals appear in the terminal:
 
@@ -98,10 +100,11 @@ Check the Contact in Salesforce — the agent's Task is attached to its activity
 
 | Piece | File | Role |
 |---|---|---|
-| Apex trigger | [`salesforce/NangoContactTrigger.trigger`](salesforce/NangoContactTrigger.trigger) | Batches changes (bulk-safe), skips no-op updates (loop-safe), fires one async callout |
-| Apex callout | [`salesforce/NangoWebhookNotifier.cls`](salesforce/NangoWebhookNotifier.cls) | `@future(callout=true)` POST to Nango's webhook URL |
-| Nango sync | [`nango-integrations/salesforce/syncs/contacts.ts`](nango-integrations/salesforce/syncs/contacts.ts) | `onWebhook` saves events in real time; hourly `exec` reconciles |
-| Provisioning | [`scripts/provision-salesforce.ts`](scripts/provision-salesforce.ts) | Installs 1–3 via the Tooling API through Nango's proxy |
+| Object config | [`nango-integrations/salesforce/objects.ts`](nango-integrations/salesforce/objects.ts) | Single source of truth: which objects and fields to watch |
+| Apex handler | [`salesforce/NangoWebhookNotifier.cls`](salesforce/NangoWebhookNotifier.cls) | Shared logic: change detection (loop-safe), batching (bulk-safe), one `@future(callout=true)` POST per invocation (async-safe) |
+| Trigger template | [`salesforce/NangoRecordTrigger.trigger.tpl`](salesforce/NangoRecordTrigger.trigger.tpl) | 3-line trigger generated per watched object |
+| Nango sync | [`nango-integrations/salesforce/syncs/records.ts`](nango-integrations/salesforce/syncs/records.ts) | `onWebhook` saves events in real time; hourly `exec` reconciles per object |
+| Provisioning | [`scripts/provision-salesforce.ts`](scripts/provision-salesforce.ts) | Installs the Remote Site Setting, handler class, and all triggers via the Tooling API through Nango's proxy |
 | Webhook receiver | [`src/server.ts`](src/server.ts) | Verifies signatures, acks fast, fetches changed records by cursor |
 | Agent | [`src/agent.ts`](src/agent.ts) | Claude tool-use loop; writes back to Salesforce via Nango |
 

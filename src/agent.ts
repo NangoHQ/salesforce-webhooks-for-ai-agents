@@ -3,10 +3,13 @@ import type { Tool, MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { env } from './env.js';
 import { nango, getInstanceUrl, type NangoRecord } from './nango.js';
 import { emit } from './events.js';
+import { SALESFORCE_OBJECTS } from '../nango-integrations/salesforce/objects.js';
 
 const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
 const MODEL = process.env['AGENT_MODEL'] ?? 'claude-sonnet-5';
 const API_VERSION = 'v61.0';
+
+const OBJECT_TYPES = SALESFORCE_OBJECTS.map((o) => o.object);
 
 /**
  * The agent's tools write back to Salesforce through Nango's proxy, which
@@ -16,28 +19,30 @@ const API_VERSION = 'v61.0';
  */
 const tools: Tool[] = [
     {
-        name: 'get_salesforce_contact',
-        description: 'Fetch the full Salesforce Contact record by ID for more context.',
+        name: 'get_salesforce_record',
+        description: 'Fetch a full Salesforce record by object type and ID for more context.',
         input_schema: {
             type: 'object',
             properties: {
-                contact_id: { type: 'string', description: 'The Salesforce Contact ID' }
+                object_type: { type: 'string', enum: OBJECT_TYPES },
+                record_id: { type: 'string', description: 'The Salesforce record ID' }
             },
-            required: ['contact_id']
+            required: ['object_type', 'record_id']
         }
     },
     {
         name: 'create_salesforce_task',
-        description: 'Create a follow-up Task in Salesforce linked to a Contact.',
+        description: 'Create a follow-up Task in Salesforce related to the changed record.',
         input_schema: {
             type: 'object',
             properties: {
-                contact_id: { type: 'string', description: 'The Salesforce Contact ID this task relates to' },
+                object_type: { type: 'string', enum: OBJECT_TYPES, description: 'Object type of the related record' },
+                related_record_id: { type: 'string', description: 'ID of the record this task relates to' },
                 subject: { type: 'string', description: 'Short task subject line' },
                 description: { type: 'string', description: 'Task details for the sales rep' },
                 priority: { type: 'string', enum: ['High', 'Normal', 'Low'] }
             },
-            required: ['contact_id', 'subject', 'description', 'priority']
+            required: ['object_type', 'related_record_id', 'subject', 'description', 'priority']
         }
     }
 ];
@@ -56,19 +61,22 @@ async function executeTool(name: string, input: any): Promise<{ result: string; 
     };
 
     switch (name) {
-        case 'get_salesforce_contact': {
+        case 'get_salesforce_record': {
             const res = await nango.get({
                 ...proxyDefaults,
-                endpoint: `/services/data/${API_VERSION}/sobjects/Contact/${input.contact_id}`
+                endpoint: `/services/data/${API_VERSION}/sobjects/${input.object_type}/${input.record_id}`
             });
             return { result: JSON.stringify(res.data) };
         }
         case 'create_salesforce_task': {
+            // Tasks link to people (Contact/Lead) via WhoId and to everything
+            // else (Account/Opportunity/...) via WhatId.
+            const isPerson = input.object_type === 'Contact' || input.object_type === 'Lead';
             const res = await nango.post({
                 ...proxyDefaults,
                 endpoint: `/services/data/${API_VERSION}/sobjects/Task`,
                 data: {
-                    WhoId: input.contact_id,
+                    [isPerson ? 'WhoId' : 'WhatId']: input.related_record_id,
                     Subject: input.subject,
                     Description: input.description,
                     Priority: input.priority,
@@ -92,35 +100,34 @@ async function executeTool(name: string, input: any): Promise<{ result: string; 
 }
 
 /**
- * Runs the agent on a single changed contact record. The record arrives fresh
- * from Nango's records cache moments after the change happened in Salesforce.
- *
- * Each run is reported to the demo UI as one 'agent-activity' event: which
- * contact changed, what the assistant decided, and the task it created.
+ * Runs the agent on a single changed record of any watched object. The record
+ * arrives fresh from Nango's records cache moments after the change happened
+ * in Salesforce. Each run is reported to the demo UI as one 'agent-activity'
+ * event: which record changed, what the assistant decided, the task created.
  */
-export async function runAgentOnContactChange(record: NangoRecord): Promise<void> {
+export async function runAgentOnRecordChange(record: NangoRecord): Promise<void> {
     const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
-    const contactName = [record['first_name'], record['last_name']].filter(Boolean).join(' ') || record.id;
-    console.log(`\n🤖 Agent run: contact ${record.id} was ${action}`);
+    const objectType = String(record['object'] ?? 'record');
+    const displayName = String(record['display_name'] ?? record.id);
+    console.log(`\n🤖 Agent run: ${objectType} ${record.id} (${displayName}) was ${action}`);
 
     if (action === 'DELETED') {
         console.log('   Skipping deleted record.');
         return;
     }
 
-    emit('agent-start', { contact: contactName, contactId: record.id, action });
+    emit('agent-start', { contact: displayName, contactId: record.id, object: objectType, action });
 
-    const { _nango_metadata, ...contact } = record;
     let createdTask: CreatedTask | undefined;
 
     const messages: MessageParam[] = [
         {
             role: 'user',
             content:
-                `A Salesforce contact was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
-                `${JSON.stringify(contact, null, 2)}\n\n` +
+                `A Salesforce ${objectType} was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
+                `${JSON.stringify({ id: record.id, name: displayName, ...(record['fields'] as object) }, null, 2)}\n\n` +
                 `Decide on an appropriate follow-up and create exactly one Task for the sales rep. ` +
-                `If the contact data is too sparse to act on, fetch the full record first.`
+                `If the record data is too sparse to act on, fetch the full record first.`
         }
     ];
 
@@ -129,7 +136,7 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
             model: MODEL,
             max_tokens: 1024,
             system:
-                'You are a CRM assistant that reacts to Salesforce contact changes. ' +
+                'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
                 'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.',
             tools,
             messages
@@ -142,8 +149,9 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
             const summary = text?.type === 'text' ? text.text : '(done)';
             console.log(`   Agent: ${summary}`);
             emit('agent-activity', {
-                contact: contactName,
+                contact: displayName,
                 contactId: record.id,
+                object: objectType,
                 action,
                 summary,
                 ...(createdTask ? { task: createdTask } : {})
@@ -178,8 +186,9 @@ export async function runAgentOnContactChange(record: NangoRecord): Promise<void
 
     console.warn('   Agent stopped: max turns reached.');
     emit('agent-activity', {
-        contact: contactName,
+        contact: displayName,
         contactId: record.id,
+        object: objectType,
         action,
         summary: 'Stopped after reaching the turn limit.',
         ...(createdTask ? { task: createdTask } : {})
