@@ -1,0 +1,27 @@
+{
+  "name": "salesforce-webhooks-for-ai-agents",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Trigger an AI agent on Salesforce record changes using Apex webhooks and Nango",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "provision": "tsx scripts/provision-salesforce.ts",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "@nangohq/node": "^0.71.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

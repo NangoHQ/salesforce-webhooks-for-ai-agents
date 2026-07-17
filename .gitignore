@@ -1,0 +1,8 @@
+node_modules/
+.env
+.cursors.json
+dist/
+build/
+.DS_Store
+nango-integrations/.nango/
+nango-integrations/build/
