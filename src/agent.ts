@@ -261,7 +261,7 @@ export async function chatWithAgent(text: string): Promise<void> {
         while (chatHistory.length > 24) chatHistory.shift();
 
         const system =
-            'You are CRM Copilot, an AI assistant connected to the user\'s Salesforce org through Nango. ' +
+            'You are an AI agent connected to the user\'s Salesforce org through Nango. ' +
             'You watch record changes in real time and can query Salesforce (read-only SOQL), fetch records, and create follow-up Tasks. ' +
             'Be concise and concrete; use tools rather than guessing. Amounts are in USD.\n\n' +
             'Recent activity you initiated from Salesforce events (most recent last):\n' +

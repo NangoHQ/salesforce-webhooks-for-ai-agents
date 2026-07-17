@@ -11,7 +11,7 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CRM Copilot</title>
+<title>AI Agent - Salesforce Webhooks demo</title>
 <style>
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
@@ -28,7 +28,7 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
   .dot.off { background: #d1d5db; }
 
   #scroll { flex: 1; overflow-y: auto; }
-  #feed { max-width: 760px; margin: 0 auto; padding: 22px 18px 12px; display: flex; flex-direction: column; gap: 12px; }
+  #feed { width: 100%; padding: 22px 24px 12px; display: flex; flex-direction: column; gap: 12px; }
 
   .notice { align-self: center; display: flex; gap: 7px; align-items: center; background: #eef1f6; border: 1px solid #e2e6ef; color: #5b6478; font-size: 12.5px; border-radius: 999px; padding: 4px 14px; max-width: 92%; }
   .notice.sf { background: #eaf3fb; border-color: #d5e7f7; color: #21618f; }
@@ -50,20 +50,20 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
   @keyframes spin { to { transform: rotate(360deg); } }
 
   footer { flex-shrink: 0; background: linear-gradient(to top, #f6f7f9 70%, transparent); padding: 10px 18px 18px; }
-  .inputrow { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; background: #fff; border: 1px solid #dfe3ec; border-radius: 14px; padding: 8px 8px 8px 16px; box-shadow: 0 2px 10px rgba(20, 30, 60, .06); }
+  .inputrow { display: flex; gap: 10px; background: #fff; border: 1px solid #dfe3ec; border-radius: 14px; padding: 8px 8px 8px 16px; box-shadow: 0 2px 10px rgba(20, 30, 60, .06); }
   .inputrow:focus-within { border-color: #b5b9f5; }
   #box { flex: 1; border: 0; outline: 0; font: inherit; background: transparent; color: #1a2233; }
   #send { background: #4f46e5; color: #fff; border: 0; border-radius: 9px; padding: 8px 16px; font: inherit; font-weight: 570; cursor: pointer; }
   #send:hover { background: #4338ca; }
   #send:disabled { opacity: .5; cursor: wait; }
-  .hint { max-width: 760px; margin: 6px auto 0; color: #a2aabb; font-size: 11.5px; text-align: center; }
+  .hint { margin: 6px 0 0; color: #a2aabb; font-size: 11.5px; text-align: center; }
 </style>
 </head>
 <body>
 <header>
-  <div class="logo">C</div>
+  <div class="logo">A</div>
   <div>
-    <h1>CRM Copilot</h1>
+    <h1>AI Agent — Salesforce Webhooks demo</h1>
     <div class="sub">Connected to your Salesforce org · reacts to changes in real time</div>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statustext">connecting…</span></div>
@@ -71,14 +71,14 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
 
 <div id="scroll"><div id="feed">
   <div class="msg agent">
-    <div class="who">CRM Copilot</div>
+    <div class="who">AI Agent</div>
     <div class="body">I'm watching your Salesforce org. When a contact, lead, account, or opportunity changes, I'll pick it up here within seconds and act on it. You can also just talk to me — try "how many open opportunities do we have?" or edit a record in Salesforce and watch.</div>
   </div>
 </div></div>
 
 <footer>
   <div class="inputrow">
-    <input id="box" placeholder="Message CRM Copilot…" autocomplete="off" />
+    <input id="box" placeholder="Message the agent…" autocomplete="off" />
     <button id="send" onclick="send()">Send</button>
   </div>
   <div class="hint">Events from Salesforce and your conversation share this feed — that's the point.</div>
@@ -120,13 +120,13 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
         return;
       case 'agent-start':
         pendingEvent[e.contactId] = add(div('msg agent',
-          '<div class="who">CRM Copilot</div>' +
+          '<div class="who">AI Agent</div>' +
           '<div class="eventline">' + esc(e.object) + ' <b>' + esc(e.contact) + '</b> was ' + (e.action === 'ADDED' ? 'created' : 'updated') + '</div>' +
           '<div class="working"><span class="spinner"></span> Looking at the change…</div>'));
         return;
       case 'agent-activity': {
         const html =
-          '<div class="who">CRM Copilot</div>' +
+          '<div class="who">AI Agent</div>' +
           '<div class="eventline">' + esc(e.object || 'Record') + ' <b>' + esc(e.contact) + '</b> was ' + (e.action === 'ADDED' ? 'created' : 'updated') + '</div>' +
           '<div class="body">' + md(e.summary) + '</div>' +
           taskCard(e.task) +
@@ -139,7 +139,7 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
       case 'chat-user':
         add(div('msg user', esc(e.text)));
         pendingChat = add(div('msg agent',
-          '<div class="who">CRM Copilot</div><div class="working"><span class="spinner"></span> <span class="wtext">Thinking…</span></div>'));
+          '<div class="who">AI Agent</div><div class="working"><span class="spinner"></span> <span class="wtext">Thinking…</span></div>'));
         return;
       case 'chat-tool': {
         const label = { query_salesforce: 'Querying Salesforce…', get_salesforce_record: 'Fetching the record…', create_salesforce_task: 'Creating a task in Salesforce…' }[e.tool] || 'Working…';
@@ -147,7 +147,7 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
         return;
       }
       case 'chat-assistant': {
-        const html = '<div class="who">CRM Copilot</div><div class="body">' + md(e.text) + '</div>' + taskCard(e.task) +
+        const html = '<div class="who">AI Agent</div><div class="body">' + md(e.text) + '</div>' + taskCard(e.task) +
           '<span class="when">' + stamp(e.at) + '</span>';
         if (pendingChat) { pendingChat.innerHTML = html; pendingChat = null; scrollDown(); }
         else { add(div('msg agent', html)); }
