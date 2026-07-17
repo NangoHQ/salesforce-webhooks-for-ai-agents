@@ -7,6 +7,7 @@
  * Deliberately NOT here: Task. The agent creates Tasks — subscribing to the
  * object your agent writes to makes it react to its own output.
  */
+
 /** Keep in step with SALESFORCE_OBJECTS below — the sync's model names are typed from this. */
 export type SalesforceModel = 'SalesforceContact' | 'SalesforceLead' | 'SalesforceAccount' | 'SalesforceOpportunity';
 
@@ -19,10 +20,6 @@ export interface SalesforceObjectConfig {
     fields: string[];
     /** Fields combined into a human-readable record name */
     nameFields: string[];
-    /** Fields shown as secondary detail in the demo UI */
-    detailFields: string[];
-    /** Field the demo "simulate" button edits, with realistic values to rotate */
-    simulate: { field: string; values: (string | number)[] };
 }
 
 export const SALESFORCE_OBJECTS: SalesforceObjectConfig[] = [
@@ -30,45 +27,25 @@ export const SALESFORCE_OBJECTS: SalesforceObjectConfig[] = [
         object: 'Contact',
         model: 'SalesforceContact',
         fields: ['FirstName', 'LastName', 'Email', 'Title', 'Phone'],
-        nameFields: ['FirstName', 'LastName'],
-        detailFields: ['Title', 'Email'],
-        simulate: {
-            field: 'Title',
-            values: ['VP of Operations', 'Head of Procurement', 'Director of IT', 'Chief Revenue Officer', 'Head of Partnerships']
-        }
+        nameFields: ['FirstName', 'LastName']
     },
     {
         object: 'Lead',
         model: 'SalesforceLead',
         fields: ['FirstName', 'LastName', 'Email', 'Company', 'Status', 'Title'],
-        nameFields: ['FirstName', 'LastName'],
-        detailFields: ['Company', 'Status'],
-        simulate: {
-            field: 'Title',
-            values: ['CTO', 'Procurement Manager', 'Operations Lead', 'Founder']
-        }
+        nameFields: ['FirstName', 'LastName']
     },
     {
         object: 'Account',
         model: 'SalesforceAccount',
         fields: ['Name', 'Industry', 'Phone', 'Website'],
-        nameFields: ['Name'],
-        detailFields: ['Industry', 'Phone'],
-        simulate: {
-            field: 'Phone',
-            values: ['(415) 555-0142', '(212) 555-0178', '(512) 555-0113', '(312) 555-0155']
-        }
+        nameFields: ['Name']
     },
     {
         object: 'Opportunity',
         model: 'SalesforceOpportunity',
         fields: ['Name', 'StageName', 'Amount', 'CloseDate'],
-        nameFields: ['Name'],
-        detailFields: ['StageName', 'Amount'],
-        simulate: {
-            field: 'Amount',
-            values: [25000, 60000, 120000, 275000, 480000]
-        }
+        nameFields: ['Name']
     }
 ];
 

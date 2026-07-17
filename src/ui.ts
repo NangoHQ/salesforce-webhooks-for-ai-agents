@@ -1,8 +1,8 @@
 /**
- * The demo UI: a mini "CRM copilot" app — the shape a real product built on
- * this pipeline would take. Left: records from every watched Salesforce
- * object, served from Nango's records cache and updating live. Right: what
- * the AI assistant did about each change.
+ * The demo UI: a chat interface with the CRM agent. Salesforce events stream
+ * into the conversation as notices, the agent's event-driven runs appear as
+ * assistant messages, and you can talk to the same agent (it can query
+ * Salesforce and create tasks through the same tools).
  *
  * Single self-contained page: SSE + vanilla JS, no build step, no deps.
  */
@@ -14,58 +14,49 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
 <title>CRM Copilot</title>
 <style>
   * { box-sizing: border-box; margin: 0; }
-  body { background: #f6f7f9; color: #1a2233; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  html, body { height: 100%; }
+  body { background: #f6f7f9; color: #1a2233; font: 14.5px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; }
   a { color: #4f46e5; text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  header { background: #fff; border-bottom: 1px solid #e6e8ee; padding: 14px 28px; display: flex; align-items: center; gap: 14px; }
+  header { background: #fff; border-bottom: 1px solid #e6e8ee; padding: 13px 22px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
   .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 15px; }
-  header h1 { font-size: 16px; font-weight: 650; }
-  header .sub { color: #68718a; font-size: 12.5px; }
-  .status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: #68718a; font-size: 12.5px; }
+  header h1 { font-size: 15.5px; font-weight: 650; }
+  header .sub { color: #68718a; font-size: 12px; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 7px; color: #68718a; font-size: 12px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
   .dot.off { background: #d1d5db; }
-  button.primary { background: #4f46e5; color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 550; cursor: pointer; }
-  button.primary:hover { background: #4338ca; }
-  button.primary:disabled { opacity: .55; cursor: wait; }
 
-  main { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 20px; padding: 20px 28px; max-width: 1280px; margin: 0 auto; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  .card { background: #fff; border: 1px solid #e6e8ee; border-radius: 12px; overflow: hidden; }
-  .card > h2 { font-size: 13px; font-weight: 650; color: #68718a; text-transform: uppercase; letter-spacing: .4px; padding: 14px 18px 10px; }
-  .card > .desc { color: #8a93a8; font-size: 12.5px; padding: 0 18px 12px; border-bottom: 1px solid #eef0f4; }
+  #scroll { flex: 1; overflow-y: auto; }
+  #feed { max-width: 760px; margin: 0 auto; padding: 22px 18px 12px; display: flex; flex-direction: column; gap: 12px; }
 
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 11.5px; color: #8a93a8; text-transform: uppercase; letter-spacing: .4px; padding: 10px 18px; border-bottom: 1px solid #eef0f4; }
-  td { padding: 11px 18px; border-bottom: 1px solid #f2f4f7; vertical-align: top; }
-  tr:last-child td { border-bottom: 0; }
-  .cname { font-weight: 570; }
-  .cdetails { color: #68718a; font-size: 12.5px; }
-  .when { color: #8a93a8; font-size: 12px; white-space: nowrap; }
-  .otype { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
-  .otype.Contact { background: #eef2ff; color: #4f46e5; }
-  .otype.Lead { background: #ecfdf5; color: #047857; }
-  .otype.Account { background: #fff7ed; color: #c2410c; }
-  .otype.Opportunity { background: #fdf2f8; color: #be185d; }
-  tr.flash > td { animation: flash 2.4s ease-out; }
-  @keyframes flash { 0% { background: #eef2ff; } 100% { background: transparent; } }
+  .notice { align-self: center; display: flex; gap: 7px; align-items: center; background: #eef1f6; border: 1px solid #e2e6ef; color: #5b6478; font-size: 12.5px; border-radius: 999px; padding: 4px 14px; max-width: 92%; }
+  .notice.sf { background: #eaf3fb; border-color: #d5e7f7; color: #21618f; }
+  .notice .zap { font-size: 12px; }
 
-  #activity { display: flex; flex-direction: column; }
-  #cards { padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow-y: auto; }
-  .act { border: 1px solid #e6e8ee; border-radius: 10px; padding: 12px 14px; }
-  .act .head { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: #68718a; flex-wrap: wrap; }
-  .act .head b { color: #1a2233; }
-  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: #4f46e5; font-weight: 600; }
-  .badge.working { background: #fef3c7; color: #b45309; }
-  .badge.info { background: #f1f5f9; color: #64748b; }
-  .act .task { margin-top: 8px; background: #f8fafc; border: 1px solid #eef0f4; border-radius: 8px; padding: 9px 12px; }
-  .act .task .subject { font-weight: 570; font-size: 13.5px; }
-  .act .task .meta { color: #8a93a8; font-size: 12px; margin-top: 2px; }
-  .act .why { margin-top: 8px; color: #3f4a63; font-size: 13px; }
-  .act .when { display: block; margin-top: 8px; }
-  .spinner { width: 12px; height: 12px; border: 2px solid #f59e0b44; border-top-color: #b45309; border-radius: 50%; animation: spin 1s linear infinite; }
+  .msg { max-width: 82%; border-radius: 14px; padding: 10px 14px; position: relative; }
+  .msg.user { align-self: flex-end; background: #4f46e5; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.agent { align-self: flex-start; background: #fff; border: 1px solid #e6e8ee; border-bottom-left-radius: 4px; }
+  .msg .who { font-size: 11px; font-weight: 650; color: #8a93a8; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 3px; }
+  .msg.agent .body { color: #26304a; white-space: pre-wrap; }
+  .msg .eventline { font-size: 12.5px; color: #68718a; margin-bottom: 5px; }
+  .msg .eventline b { color: #1a2233; }
+  .msg .task { margin-top: 9px; background: #f8fafc; border: 1px solid #eef0f4; border-radius: 9px; padding: 9px 12px; }
+  .msg .task .subject { font-weight: 590; font-size: 13.5px; }
+  .msg .task .meta { color: #8a93a8; font-size: 12px; margin-top: 2px; }
+  .msg .when { display: block; font-size: 11px; color: #a2aabb; margin-top: 6px; }
+  .working { display: flex; gap: 8px; align-items: center; color: #8a93a8; font-size: 13px; }
+  .spinner { width: 12px; height: 12px; border: 2px solid #c7cbe0; border-top-color: #4f46e5; border-radius: 50%; animation: spin .9s linear infinite; flex-shrink: 0; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .empty { color: #8a93a8; text-align: center; padding: 28px 16px; font-size: 13px; }
+
+  footer { flex-shrink: 0; background: linear-gradient(to top, #f6f7f9 70%, transparent); padding: 10px 18px 18px; }
+  .inputrow { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; background: #fff; border: 1px solid #dfe3ec; border-radius: 14px; padding: 8px 8px 8px 16px; box-shadow: 0 2px 10px rgba(20, 30, 60, .06); }
+  .inputrow:focus-within { border-color: #b5b9f5; }
+  #box { flex: 1; border: 0; outline: 0; font: inherit; background: transparent; color: #1a2233; }
+  #send { background: #4f46e5; color: #fff; border: 0; border-radius: 9px; padding: 8px 16px; font: inherit; font-weight: 570; cursor: pointer; }
+  #send:hover { background: #4338ca; }
+  #send:disabled { opacity: .5; cursor: wait; }
+  .hint { max-width: 760px; margin: 6px auto 0; color: #a2aabb; font-size: 11.5px; text-align: center; }
 </style>
 </head>
 <body>
@@ -73,115 +64,120 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
   <div class="logo">C</div>
   <div>
     <h1>CRM Copilot</h1>
-    <div class="sub">Your AI assistant, watching Salesforce so you don't have to</div>
+    <div class="sub">Connected to your Salesforce org · reacts to changes in real time</div>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statustext">connecting…</span></div>
-  <button class="primary" id="simulate" onclick="simulate()">Simulate a change in Salesforce</button>
 </header>
 
-<main>
-  <section class="card">
-    <h2>Records</h2>
-    <div class="desc">Contacts, leads, accounts &amp; opportunities — live from your Salesforce org. Rows update seconds after a record changes.</div>
-    <table>
-      <thead><tr><th>Type</th><th>Record</th><th>Updated</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="3" class="empty">Loading records…</td></tr></tbody>
-    </table>
-  </section>
+<div id="scroll"><div id="feed">
+  <div class="msg agent">
+    <div class="who">CRM Copilot</div>
+    <div class="body">I'm watching your Salesforce org. When a contact, lead, account, or opportunity changes, I'll pick it up here within seconds and act on it. You can also just talk to me — try "how many open opportunities do we have?" or edit a record in Salesforce and watch.</div>
+  </div>
+</div></div>
 
-  <section class="card" id="activity">
-    <h2>Assistant activity</h2>
-    <div class="desc">What the AI did about each change, with links to the work.</div>
-    <div id="cards"><div class="empty">No activity yet. Change a record in Salesforce or press the button above.</div></div>
-  </section>
-</main>
+<footer>
+  <div class="inputrow">
+    <input id="box" placeholder="Message CRM Copilot…" autocomplete="off" />
+    <button id="send" onclick="send()">Send</button>
+  </div>
+  <div class="hint">Events from Salesforce and your conversation share this feed — that's the point.</div>
+</footer>
 
 <script>
-  const rows = document.getElementById('rows');
-  const cards = document.getElementById('cards');
-  let lastSeen = {};   // recordId -> updatedAt, to flash changed rows
-  let pending = {};    // recordId -> placeholder card element
+  const feed = document.getElementById('feed');
+  const scroller = document.getElementById('scroll');
+  const box = document.getElementById('box');
+  const sendBtn = document.getElementById('send');
+  let pendingEvent = {};   // contactId -> element (event-driven runs)
+  let pendingChat = null;  // element (chat turn in flight)
 
-  const rel = (iso) => {
-    const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
-    if (s < 60) return 'just now';
-    if (s < 3600) return Math.floor(s / 60) + 'm ago';
-    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-    return new Date(iso).toLocaleDateString();
-  };
   const esc = (t) => (t ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // Minimal markdown for agent replies: **bold** and \`code\` only.
+  const md = (t) => esc(t).replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>').replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+  const stamp = (iso) => new Date(iso).toLocaleTimeString();
+  const scrollDown = () => { scroller.scrollTop = scroller.scrollHeight; };
 
-  async function loadRecords(flash) {
-    const res = await fetch('/api/records');
-    const { records } = await res.json();
-    rows.innerHTML = records.map(r => {
-      const changed = flash && lastSeen[r.id] && lastSeen[r.id] !== r.updatedAt;
-      lastSeen[r.id] = r.updatedAt;
-      return '<tr class="' + (changed ? 'flash' : '') + '">' +
-        '<td><span class="otype ' + esc(r.object) + '">' + esc(r.object) + '</span></td>' +
-        '<td><div class="cname">' + esc(r.name) + '</div><div class="cdetails">' + esc(r.details || '') + '</div></td>' +
-        '<td class="when">' + rel(r.updatedAt) + '</td></tr>';
-    }).join('') || '<tr><td colspan="3" class="empty">No records synced yet.</td></tr>';
-  }
+  function add(el) { feed.appendChild(el); scrollDown(); return el; }
+  function div(cls, html) { const el = document.createElement('div'); el.className = cls; el.innerHTML = html; return el; }
 
-  function addCard(html) {
-    cards.querySelector('.empty')?.remove();
-    const el = document.createElement('div');
-    el.className = 'act';
-    el.innerHTML = html;
-    cards.prepend(el);
-    return el;
+  function taskCard(task) {
+    if (!task) return '';
+    return '<div class="task"><div class="subject">📋 ' + esc(task.subject) + '</div>' +
+      '<div class="meta">' + esc(task.priority) + ' priority · Task created in Salesforce' +
+      (task.url ? ' · <a href="' + esc(task.url) + '" target="_blank">Open ↗</a>' : '') + '</div></div>';
   }
 
   function onEvent(e) {
-    if (e.kind === 'contacts-updated') { loadRecords(true); return; }
-    if (e.kind === 'info') {
-      addCard('<div class="head"><span class="badge info">Salesforce</span> ' + esc(e.text) + '</div>');
-      return;
-    }
-    if (e.kind === 'change-detected') {
-      addCard('<div class="head"><span class="badge">Change detected</span> ' +
-        e.count + ' record' + (e.count > 1 ? 's' : '') + ' changed in Salesforce</div>');
-      return;
-    }
-    if (e.kind === 'agent-start') {
-      pending[e.contactId] = addCard(
-        '<div class="head"><span class="spinner"></span><span class="badge working">Working</span> ' +
-        'Assistant is looking at ' + esc(e.object || '') + ' <b>' + esc(e.contact) + '</b>…</div>');
-      return;
-    }
-    if (e.kind === 'agent-activity') {
-      const card = pending[e.contactId];
-      delete pending[e.contactId];
-      const html =
-        '<div class="head"><span class="badge">Done</span> ' + esc(e.object || 'Record') + ' <b>' + esc(e.contact) + '</b> was ' + (e.action === 'ADDED' ? 'created' : 'updated') + '</div>' +
-        (e.task
-          ? '<div class="task"><div class="subject">📋 ' + esc(e.task.subject) + '</div>' +
-            '<div class="meta">' + esc(e.task.priority) + ' priority · Task in Salesforce' +
-            (e.task.url ? ' · <a href="' + esc(e.task.url) + '" target="_blank">Open ↗</a>' : '') + '</div></div>'
-          : '') +
-        '<div class="why">' + esc(e.summary) + '</div>' +
-        '<span class="when">' + new Date(e.at).toLocaleTimeString() + '</span>';
-      if (card) { card.innerHTML = html; } else { addCard(html); }
-      return;
+    switch (e.kind) {
+      case 'change-detected': {
+        const what = e.count === 1 ? ('A ' + e.object) : (e.count + ' ' + e.object + 's');
+        add(div('notice sf', '<span class="zap">⚡</span> ' + esc(what) + ' changed in Salesforce · ' + stamp(e.at)));
+        return;
+      }
+      case 'info':
+        add(div('notice', esc(e.text)));
+        return;
+      case 'agent-start':
+        pendingEvent[e.contactId] = add(div('msg agent',
+          '<div class="who">CRM Copilot</div>' +
+          '<div class="eventline">' + esc(e.object) + ' <b>' + esc(e.contact) + '</b> was ' + (e.action === 'ADDED' ? 'created' : 'updated') + '</div>' +
+          '<div class="working"><span class="spinner"></span> Looking at the change…</div>'));
+        return;
+      case 'agent-activity': {
+        const html =
+          '<div class="who">CRM Copilot</div>' +
+          '<div class="eventline">' + esc(e.object || 'Record') + ' <b>' + esc(e.contact) + '</b> was ' + (e.action === 'ADDED' ? 'created' : 'updated') + '</div>' +
+          '<div class="body">' + md(e.summary) + '</div>' +
+          taskCard(e.task) +
+          '<span class="when">' + stamp(e.at) + '</span>';
+        const el = pendingEvent[e.contactId];
+        delete pendingEvent[e.contactId];
+        if (el) { el.innerHTML = html; scrollDown(); } else { add(div('msg agent', html)); }
+        return;
+      }
+      case 'chat-user':
+        add(div('msg user', esc(e.text)));
+        pendingChat = add(div('msg agent',
+          '<div class="who">CRM Copilot</div><div class="working"><span class="spinner"></span> <span class="wtext">Thinking…</span></div>'));
+        return;
+      case 'chat-tool': {
+        const label = { query_salesforce: 'Querying Salesforce…', get_salesforce_record: 'Fetching the record…', create_salesforce_task: 'Creating a task in Salesforce…' }[e.tool] || 'Working…';
+        pendingChat?.querySelector('.wtext') && (pendingChat.querySelector('.wtext').textContent = label);
+        return;
+      }
+      case 'chat-assistant': {
+        const html = '<div class="who">CRM Copilot</div><div class="body">' + md(e.text) + '</div>' + taskCard(e.task) +
+          '<span class="when">' + stamp(e.at) + '</span>';
+        if (pendingChat) { pendingChat.innerHTML = html; pendingChat = null; scrollDown(); }
+        else { add(div('msg agent', html)); }
+        return;
+      }
     }
   }
 
   const es = new EventSource('/events');
-  es.onopen = () => { document.getElementById('dot').classList.remove('off'); document.getElementById('statustext').textContent = 'Connected to Salesforce · live'; };
+  es.onopen = () => { document.getElementById('dot').classList.remove('off'); document.getElementById('statustext').textContent = 'Live'; };
   es.onerror = () => { document.getElementById('dot').classList.add('off'); document.getElementById('statustext').textContent = 'reconnecting…'; };
   es.onmessage = (m) => onEvent(JSON.parse(m.data));
 
-  async function simulate() {
-    const btn = document.getElementById('simulate');
-    btn.disabled = true;
-    btn.textContent = 'Changing a record…';
-    try { await fetch('/demo/simulate', { method: 'POST' }); }
-    finally { setTimeout(() => { btn.disabled = false; btn.textContent = 'Simulate a change in Salesforce'; }, 5000); }
+  async function send() {
+    const text = box.value.trim();
+    if (!text) return;
+    box.value = '';
+    sendBtn.disabled = true;
+    try {
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        add(div('notice', esc(err.error || 'Something went wrong — try again.')));
+      }
+    } finally {
+      sendBtn.disabled = false;
+      box.focus();
+    }
   }
-
-  loadRecords(false);
-  setInterval(() => loadRecords(false), 60000);   // keep "updated Xm ago" fresh
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !sendBtn.disabled) send(); });
 </script>
 </body>
 </html>`;

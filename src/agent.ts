@@ -31,8 +31,19 @@ const tools: Tool[] = [
         }
     },
     {
+        name: 'query_salesforce',
+        description: 'Run a read-only SOQL SELECT query against Salesforce (e.g. to find records, count opportunities, check pipeline).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                soql: { type: 'string', description: 'A SOQL SELECT statement' }
+            },
+            required: ['soql']
+        }
+    },
+    {
         name: 'create_salesforce_task',
-        description: 'Create a follow-up Task in Salesforce related to the changed record.',
+        description: 'Create a follow-up Task in Salesforce related to a record.',
         input_schema: {
             type: 'object',
             properties: {
@@ -68,6 +79,18 @@ async function executeTool(name: string, input: any): Promise<{ result: string; 
             });
             return { result: JSON.stringify(res.data) };
         }
+        case 'query_salesforce': {
+            const soql = String(input.soql ?? '').trim();
+            if (!/^select\s/i.test(soql)) {
+                return { result: 'Rejected: only SELECT queries are allowed.' };
+            }
+            const res = await nango.get({
+                ...proxyDefaults,
+                endpoint: `/services/data/${API_VERSION}/query`,
+                params: { q: soql }
+            });
+            return { result: JSON.stringify(res.data).slice(0, 6000) };
+        }
         case 'create_salesforce_task': {
             // Tasks link to people (Contact/Lead) via WhoId and to everything
             // else (Account/Opportunity/...) via WhatId.
@@ -99,45 +122,27 @@ async function executeTool(name: string, input: any): Promise<{ result: string; 
     }
 }
 
-/**
- * Runs the agent on a single changed record of any watched object. The record
- * arrives fresh from Nango's records cache moments after the change happened
- * in Salesforce. Each run is reported to the demo UI as one 'agent-activity'
- * event: which record changed, what the assistant decided, the task created.
- */
-export async function runAgentOnRecordChange(record: NangoRecord): Promise<void> {
-    const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
-    const objectType = String(record['object'] ?? 'record');
-    const displayName = String(record['display_name'] ?? record.id);
-    console.log(`\n🤖 Agent run: ${objectType} ${record.id} (${displayName}) was ${action}`);
+/** Rolling context of what happened, so the chat can answer "what just happened?" */
+const recentActivity: string[] = [];
+function remember(line: string): void {
+    recentActivity.push(`[${new Date().toLocaleTimeString()}] ${line}`);
+    if (recentActivity.length > 20) recentActivity.shift();
+}
 
-    if (action === 'DELETED') {
-        console.log('   Skipping deleted record.');
-        return;
-    }
+interface LoopOutcome {
+    summary: string;
+    task?: CreatedTask;
+}
 
-    emit('agent-start', { contact: displayName, contactId: record.id, object: objectType, action });
-
+/** Shared Claude tool-use loop for event-driven runs and chat turns. */
+async function runToolLoop(messages: MessageParam[], system: string, onTool?: (name: string) => void): Promise<LoopOutcome> {
     let createdTask: CreatedTask | undefined;
 
-    const messages: MessageParam[] = [
-        {
-            role: 'user',
-            content:
-                `A Salesforce ${objectType} was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
-                `${JSON.stringify({ id: record.id, name: displayName, ...(record['fields'] as object) }, null, 2)}\n\n` +
-                `Decide on an appropriate follow-up and create exactly one Task for the sales rep. ` +
-                `If the record data is too sparse to act on, fetch the full record first.`
-        }
-    ];
-
-    for (let turn = 0; turn < 5; turn++) {
+    for (let turn = 0; turn < 8; turn++) {
         const response = await anthropic.messages.create({
             model: MODEL,
             max_tokens: 1024,
-            system:
-                'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
-                'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.',
+            system,
             tools,
             messages
         });
@@ -146,26 +151,17 @@ export async function runAgentOnRecordChange(record: NangoRecord): Promise<void>
 
         if (response.stop_reason !== 'tool_use') {
             const text = response.content.find((block) => block.type === 'text');
-            const summary = text?.type === 'text' ? text.text : '(done)';
-            console.log(`   Agent: ${summary}`);
-            emit('agent-activity', {
-                contact: displayName,
-                contactId: record.id,
-                object: objectType,
-                action,
-                summary,
-                ...(createdTask ? { task: createdTask } : {})
-            });
-            return;
+            return { summary: text?.type === 'text' ? text.text : '(done)', ...(createdTask ? { task: createdTask } : {}) };
         }
 
         const toolResults = [];
         for (const block of response.content) {
             if (block.type !== 'tool_use') continue;
             console.log(`   → Tool call: ${block.name}(${JSON.stringify(block.input)})`);
+            onTool?.(block.name);
             // Surface tool failures to the model as error results instead of
-            // crashing the run — Salesforce 4xx errors (deleted record, bad
-            // input) are routine and the model can often recover.
+            // crashing the run — Salesforce 4xx errors are routine and the
+            // model can often recover.
             let result: string;
             let isError = false;
             try {
@@ -184,13 +180,87 @@ export async function runAgentOnRecordChange(record: NangoRecord): Promise<void>
         messages.push({ role: 'user', content: toolResults });
     }
 
-    console.warn('   Agent stopped: max turns reached.');
+    return { summary: 'Stopped after reaching the turn limit.', ...(createdTask ? { task: createdTask } : {}) };
+}
+
+/**
+ * Event-driven run: reacts to a single changed record of any watched object,
+ * arriving fresh from Nango's records cache moments after the change happened
+ * in Salesforce. Reported to the UI as one 'agent-activity' chat entry.
+ */
+export async function runAgentOnRecordChange(record: NangoRecord): Promise<void> {
+    const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
+    const objectType = String(record['object'] ?? 'record');
+    const displayName = String(record['display_name'] ?? record.id);
+    console.log(`\n🤖 Agent run: ${objectType} ${record.id} (${displayName}) was ${action}`);
+
+    if (action === 'DELETED') {
+        console.log('   Skipping deleted record.');
+        return;
+    }
+
+    emit('agent-start', { contact: displayName, contactId: record.id, object: objectType, action });
+
+    const messages: MessageParam[] = [
+        {
+            role: 'user',
+            content:
+                `A Salesforce ${objectType} was just ${action === 'ADDED' ? 'created' : 'updated'}:\n\n` +
+                `${JSON.stringify({ id: record.id, name: displayName, ...(record['fields'] as object) }, null, 2)}\n\n` +
+                `Decide on an appropriate follow-up and create exactly one Task for the sales rep. ` +
+                `If the record data is too sparse to act on, fetch the full record first.`
+        }
+    ];
+
+    const outcome = await runToolLoop(
+        messages,
+        'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
+            'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.'
+    );
+
+    console.log(`   Agent: ${outcome.summary}`);
+    remember(`${objectType} "${displayName}" was ${action.toLowerCase()} → ${outcome.task ? `created task "${outcome.task.subject}"` : outcome.summary.slice(0, 120)}`);
     emit('agent-activity', {
         contact: displayName,
         contactId: record.id,
         object: objectType,
         action,
-        summary: 'Stopped after reaching the turn limit.',
-        ...(createdTask ? { task: createdTask } : {})
+        summary: outcome.summary,
+        ...(outcome.task ? { task: outcome.task } : {})
     });
+}
+
+/** One shared chat conversation for the demo UI (in-memory, single session). */
+const chatHistory: MessageParam[] = [];
+let chatBusy = false;
+
+export function isChatBusy(): boolean {
+    return chatBusy;
+}
+
+export async function chatWithAgent(text: string): Promise<void> {
+    chatBusy = true;
+    try {
+        emit('chat-user', { text });
+        chatHistory.push({ role: 'user', content: text });
+        // Keep the demo conversation bounded (drop oldest exchanges, keep pairs).
+        while (chatHistory.length > 24) chatHistory.shift();
+
+        const system =
+            'You are CRM Copilot, an AI assistant connected to the user\'s Salesforce org through Nango. ' +
+            'You watch record changes in real time and can query Salesforce (read-only SOQL), fetch records, and create follow-up Tasks. ' +
+            'Be concise and concrete; use tools rather than guessing. Amounts are in USD.\n\n' +
+            'Recent activity you initiated from Salesforce events (most recent last):\n' +
+            (recentActivity.length ? recentActivity.join('\n') : '(none yet this session)');
+
+        const outcome = await runToolLoop([...chatHistory], system, (tool) => emit('chat-tool', { tool }));
+
+        chatHistory.push({ role: 'assistant', content: outcome.summary });
+        emit('chat-assistant', { text: outcome.summary, ...(outcome.task ? { task: outcome.task } : {}) });
+    } catch (err) {
+        emit('chat-assistant', { text: 'Something went wrong handling that message — check the server logs.' });
+        throw err;
+    } finally {
+        chatBusy = false;
+    }
 }

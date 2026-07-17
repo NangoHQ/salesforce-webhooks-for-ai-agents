@@ -76,12 +76,10 @@ In the Nango dashboard → **Environment Settings → Webhooks**, set the primar
 
 ### 5. Trigger it
 
-Open **http://localhost:3000** — a mini "CRM Copilot" app, the shape a real product built on this pipeline would take:
+Open **http://localhost:3000** — a chat interface with the agent, where Salesforce events and your conversation share one feed:
 
-- **Records** — contacts, leads, accounts, and opportunities served from Nango's records cache (not the Salesforce API); rows flash and re-sort seconds after a record changes in the org
-- **Assistant activity** — a card per change: which record changed, what the AI decided and why, and the Task it created with an *Open ↗* link into Salesforce
-
-Press **Simulate a change in Salesforce** (or edit any watched record in Salesforce yourself) and watch the whole loop run.
+- Edit any watched record in Salesforce and, seconds later, a notice appears ("⚡ A Contact changed in Salesforce") followed by the agent's run: what changed, what it decided and why, and the Task it created with an *Open ↗* link into Salesforce
+- Or just talk to it — "how many open opportunities do we have?" — it answers with live SOQL against your org, using the same tools the event-driven runs use
 
 The pipeline internals appear in the terminal:
 
@@ -106,7 +104,8 @@ Check the Contact in Salesforce — the agent's Task is attached to its activity
 | Nango sync | [`nango-integrations/salesforce/syncs/records.ts`](nango-integrations/salesforce/syncs/records.ts) | `onWebhook` saves events in real time; hourly `exec` reconciles per object |
 | Provisioning | [`scripts/provision-salesforce.ts`](scripts/provision-salesforce.ts) | Installs the Remote Site Setting, handler class, and all triggers via the Tooling API through Nango's proxy |
 | Webhook receiver | [`src/server.ts`](src/server.ts) | Verifies signatures, acks fast, fetches changed records by cursor |
-| Agent | [`src/agent.ts`](src/agent.ts) | Claude tool-use loop; writes back to Salesforce via Nango |
+| Agent | [`src/agent.ts`](src/agent.ts) | Claude tool-use loop shared by event runs and chat; queries Salesforce (read-only SOQL) and writes Tasks back via Nango |
+| Chat UI | [`src/ui.ts`](src/ui.ts) | Single-page agent chat; Salesforce events stream into the conversation over SSE |
 
 The routing contract: the Apex payload's `nango.connectionId` tells Nango which connection the event belongs to, and `nango.eventType` is matched against the sync's `webhookSubscriptions`.
 

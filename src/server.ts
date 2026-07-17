@@ -10,10 +10,10 @@ import express from 'express';
 import { env, requireEnv } from './env.js';
 import { nango, fetchChangedRecords } from './nango.js';
 import { getCursor, saveCursor } from './cursor-store.js';
-import { runAgentOnRecordChange } from './agent.js';
+import { runAgentOnRecordChange, chatWithAgent, isChatBusy } from './agent.js';
 import { emit, subscribe } from './events.js';
 import { DEMO_PAGE } from './ui.js';
-import { SALESFORCE_OBJECTS, configForModel } from '../nango-integrations/salesforce/objects.js';
+import { configForModel } from '../nango-integrations/salesforce/objects.js';
 
 // Fail fast at startup instead of failing on the first webhook/agent run.
 requireEnv('NANGO_WEBHOOK_SIGNING_KEY');
@@ -53,79 +53,27 @@ function enqueue(key: string, run: () => Promise<void>): void {
     next.catch((err) => console.error('Webhook handling failed:', err));
 }
 
-// Demo UI: a mini "CRM copilot" app at http://localhost:<port>/
+// Demo UI: the agent chat interface at http://localhost:<port>/
 app.get('/', (_req, res) => res.type('html').send(DEMO_PAGE));
 app.get('/events', (_req, res) => subscribe(res));
 
-// Records straight from Nango's records cache — the same store the sync keeps
-// fresh in real time, across every watched object. This is what your product
-// would read instead of hitting the Salesforce API on every page load.
-app.get('/api/records', async (_req, res) => {
-    try {
-        const all: any[] = [];
-        for (const cfg of SALESFORCE_OBJECTS) {
-            const { records } = await nango.listRecords({
-                providerConfigKey: env.integrationId,
-                connectionId: env.connectionId,
-                model: cfg.model,
-                limit: 100
-            });
-            const mapped = (records as any[])
-                .filter((r) => r._nango_metadata.last_action !== 'DELETED')
-                .map((r) => ({
-                    id: r.id,
-                    object: r.object,
-                    name: r.display_name,
-                    details: cfg.detailFields
-                        .map((f) => r.fields?.[f])
-                        .filter((v: unknown) => v !== null && v !== undefined && v !== '')
-                        .join(' · '),
-                    // Salesforce's own modification time — the cache-write time
-                    // would show every record as "just now" after a full sync.
-                    updatedAt: r.last_modified_date
-                }))
-                .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
-                .slice(0, 25); // keep every object type represented in the table
-            all.push(...mapped);
-        }
-        all.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-        res.json({ records: all });
-    } catch (err: any) {
-        res.status(500).json({ error: String(err?.response?.data ?? err) });
+// Chat with the same agent that reacts to Salesforce events. One shared
+// in-memory conversation — this is a demo, not a session manager.
+app.post('/api/chat', async (req, res) => {
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) {
+        res.status(400).json({ error: 'message required' });
+        return;
     }
-});
-
-// Demo helper: edit a random cached record (any watched object) so the whole
-// pipeline fires without opening Salesforce.
-app.post('/demo/simulate', async (_req, res) => {
+    if (isChatBusy()) {
+        res.status(409).json({ error: 'the assistant is still working on the previous message' });
+        return;
+    }
     try {
-        const cfg = SALESFORCE_OBJECTS[Math.floor(Math.random() * SALESFORCE_OBJECTS.length)]!;
-        const { records } = await nango.listRecords({
-            providerConfigKey: env.integrationId,
-            connectionId: env.connectionId,
-            model: cfg.model,
-            limit: 50
-        });
-        const alive = (records as any[]).filter((r) => r._nango_metadata.last_action !== 'DELETED');
-        const target = alive[Math.floor(Math.random() * alive.length)];
-        if (!target) {
-            res.status(404).json({ error: `no cached ${cfg.object} records yet` });
-            return;
-        }
-        const value = cfg.simulate.values[Math.floor(Math.random() * cfg.simulate.values.length)]!;
-        await nango.proxy({
-            providerConfigKey: env.integrationId,
-            connectionId: env.connectionId,
-            method: 'PATCH',
-            endpoint: `/services/data/v61.0/sobjects/${cfg.object}/${target.id}`,
-            data: { [cfg.simulate.field]: value }
-        });
-        emit('info', {
-            text: `${cfg.object} "${target.display_name}" had its ${cfg.simulate.field} changed to "${value}" in Salesforce — waiting for the org to notify us…`
-        });
-        res.json({ ok: true, object: cfg.object, record: target.id });
+        await chatWithAgent(message);
+        res.json({ ok: true });
     } catch (err: any) {
-        res.status(500).json({ error: String(err?.response?.data ?? err) });
+        res.status(500).json({ error: String(err?.message ?? err) });
     }
 });
 
@@ -176,12 +124,13 @@ async function handleSyncWebhook(payload: any): Promise<void> {
         console.error(`Sync ${payload.syncName} failed:`, payload.error);
         return;
     }
-    if (!configForModel(payload.model)) return;
+    const objectConfig = configForModel(payload.model);
+    if (!objectConfig) return;
 
     const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
     console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
     if (added + updated + deleted > 0) {
-        emit('change-detected', { count: added + updated + deleted, model: payload.model });
+        emit('change-detected', { count: added + updated + deleted, object: objectConfig.object });
     }
 
     const hasCursor = Boolean(getCursor(payload.connectionId, payload.model));
@@ -196,9 +145,6 @@ async function handleSyncWebhook(payload: any): Promise<void> {
 
     const records = await fetchChangedRecords(payload.connectionId, payload.model, payload.modifiedAfter);
     console.log(`   Fetched ${records.length} changed record(s) from Nango's records cache`);
-    if (records.length > 0) {
-        emit('contacts-updated', {});
-    }
 
     // Bootstrap rule: the agent only reacts to changes that happen AFTER this
     // app first saw a model. Poll-driven runs with no stored cursor are the
@@ -209,6 +155,7 @@ async function handleSyncWebhook(payload: any): Promise<void> {
     if (!hasCursor && !isWebhookRun) {
         advanceCursorPastAll(payload, records);
         console.log(`   Initial sync for ${payload.model}: primed cursor past ${records.length} historical record(s), agent not invoked.`);
+        emit('info', { text: `Initial sync: loaded ${records.length} existing ${objectConfig.object} record(s) from Salesforce — the assistant only reacts to changes from now on.` });
         return;
     }
 
@@ -218,6 +165,7 @@ async function handleSyncWebhook(payload: any): Promise<void> {
             `   ${records.length} changes in one webhook (bulk edit or backlog?) — ` +
                 `skipping agent runs (cap: ${MAX_AGENT_RUNS_PER_WEBHOOK}). Raise MAX_AGENT_RUNS_PER_WEBHOOK if intended.`
         );
+        emit('info', { text: `${records.length} ${objectConfig.object} records changed at once (bulk edit?) — skipping individual assistant runs.` });
         return;
     }
 
