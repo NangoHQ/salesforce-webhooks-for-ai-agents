@@ -93,12 +93,16 @@ async function ensureRemoteSiteSetting(): Promise<void> {
     }
     try {
         // The Tooling API sobject for Remote Site Settings is RemoteProxy.
-        // (Its "disable protocol security" flag is called ProtocolMismatch and
-        // defaults to false on create, so we don't need to set it.)
+        // Creation requires the FullName + Metadata shape ("You must provide a
+        // valid Metadata field for RemoteProxy"); flat fields are query-only.
         await toolingCreate('RemoteProxy', {
-            SiteName: 'Nango',
-            EndpointUrl: NANGO_HOST,
-            IsActive: true
+            FullName: 'Nango',
+            Metadata: {
+                url: NANGO_HOST,
+                isActive: true,
+                disableProtocolSecurity: false,
+                description: 'Allow Apex callouts to Nango webhooks'
+            }
         });
         console.log('✓ Created Remote Site Setting "Nango" → https://api.nango.dev');
     } catch (err: any) {

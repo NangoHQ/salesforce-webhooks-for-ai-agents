@@ -47,7 +47,12 @@ const sync = createSync({
         // don't overwrite them with stale polled data.
         await nango.setMergingStrategy({ strategy: 'ignore_if_modified_after' }, 'SalesforceContact');
 
-        const checkpoint = await nango.getCheckpoint();
+        // Runtime-check the checkpoint shape: if this sync replaced a
+        // previously deployed version (e.g. a template sync), getCheckpoint()
+        // returns the OLD sync's checkpoint object, whose keys won't match our
+        // schema — treating it as absent falls back to a full (re)sync.
+        const rawCheckpoint = await nango.getCheckpoint();
+        const checkpoint = typeof rawCheckpoint?.lastModifiedISO === 'string' ? rawCheckpoint : null;
 
         let query = 'SELECT Id, FirstName, LastName, Email, Title, Phone, LastModifiedDate FROM Contact';
         if (checkpoint) {
