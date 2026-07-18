@@ -11,5 +11,6 @@
   "devDependencies": {
     "nango": "0.71.0",
     "zod": "4.3.6"
-  }
+  },
+  "license": "MIT"
 }

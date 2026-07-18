@@ -9,3 +9,11 @@ nango-integrations/build/
 
 # Article draft (published separately, not part of the sample repo)
 ARTICLE.md
+
+# Coding-agent tooling (local only)
+.agents/
+.bob/
+.claude/
+.windsurf/
+.cursor/
+skills-lock.json
