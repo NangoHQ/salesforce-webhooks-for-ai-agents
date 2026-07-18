@@ -166,8 +166,8 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
     }
   }
 
-  const READY_MSG = 'I\'m watching your Salesforce org. When a contact, lead, account, or opportunity changes, I\'ll pick it up here within seconds and act on it. You can also just talk to me — try "how many open opportunities do we have?" or edit a record in Salesforce and watch.';
-  const CONNECT_MSG = 'Hi! I\'m an AI agent that reacts to Salesforce changes in real time. Connect your Salesforce account to get started — I\'ll set up the webhook triggers in your org automatically.';
+  const READY_MSG = 'I’m watching your Salesforce org. When a contact, lead, account, or opportunity changes, I’ll pick it up here within seconds and act on it. You can also just talk to me — try “how many open opportunities do we have?” or edit a record in Salesforce and watch.';
+  const CONNECT_MSG = 'Hi! I’m an AI agent that reacts to Salesforce changes in real time. Connect your Salesforce account to get started — I’ll set up the webhook triggers in your org automatically.';
 
   function setConnected(connected) {
     document.getElementById('welcomebody').textContent = connected ? READY_MSG : CONNECT_MSG;
@@ -187,7 +187,7 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
       const data = await res.json();
       if (data.connectLink) {
         window.open(data.connectLink, '_blank', 'width=500,height=700');
-        add(div('notice', 'Finish authorizing in the Nango window — I\'ll pick it up from there.'));
+        add(div('notice', 'Finish authorizing in the Nango window — I’ll pick it up from there.'));
       } else {
         add(div('notice', esc(data.error || 'Could not start the connect flow.')));
       }
