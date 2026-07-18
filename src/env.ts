@@ -19,7 +19,6 @@ export function requireEnv(name: string): string {
 
 export const env = {
     nangoSecretKey: requireEnv('NANGO_SECRET_KEY'),
-    connectionId: requireEnv('NANGO_CONNECTION_ID'),
     integrationId: process.env['NANGO_INTEGRATION_ID'] ?? 'salesforce',
     // Only needed by the provision script; validated there.
     inboundWebhookUrl: process.env['NANGO_INBOUND_WEBHOOK_URL'] ?? '',

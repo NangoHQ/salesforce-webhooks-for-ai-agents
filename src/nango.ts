@@ -9,18 +9,20 @@ export const nango = new Nango({
     ...(env.nangoWebhookSigningKey ? { webhookSigningKey: env.nangoWebhookSigningKey } : {})
 });
 
-let cachedInstanceUrl: string | null | undefined;
+const instanceUrlCache = new Map<string, string | null>();
 
-/** Salesforce instance URL of the connected org, for building record links. */
-export async function getInstanceUrl(): Promise<string | null> {
-    if (cachedInstanceUrl !== undefined) return cachedInstanceUrl;
+/** Salesforce instance URL of a connection's org, for building record links. */
+export async function getInstanceUrl(connectionId: string): Promise<string | null> {
+    if (instanceUrlCache.has(connectionId)) return instanceUrlCache.get(connectionId) ?? null;
+    let url: string | null = null;
     try {
-        const conn = await nango.getConnection(env.integrationId, env.connectionId);
-        cachedInstanceUrl = (conn as any)?.connection_config?.instance_url ?? null;
+        const conn = await nango.getConnection(env.integrationId, connectionId);
+        url = (conn as any)?.connection_config?.instance_url ?? null;
     } catch {
-        cachedInstanceUrl = null;
+        url = null;
     }
-    return cachedInstanceUrl ?? null;
+    instanceUrlCache.set(connectionId, url);
+    return url;
 }
 
 export interface NangoRecord {

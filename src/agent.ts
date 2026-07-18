@@ -3,6 +3,7 @@ import type { Tool, MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { env } from './env.js';
 import { nango, getInstanceUrl, type NangoRecord } from './nango.js';
 import { emit } from './events.js';
+import { getConnectionId } from './connection-store.js';
 import { SALESFORCE_OBJECTS } from '../nango-integrations/salesforce/objects.js';
 
 const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
@@ -65,10 +66,10 @@ interface CreatedTask {
     url?: string;
 }
 
-async function executeTool(name: string, input: any): Promise<{ result: string; task?: CreatedTask }> {
+async function executeTool(connectionId: string, name: string, input: any): Promise<{ result: string; task?: CreatedTask }> {
     const proxyDefaults = {
         providerConfigKey: env.integrationId,
-        connectionId: env.connectionId
+        connectionId
     };
 
     switch (name) {
@@ -106,7 +107,7 @@ async function executeTool(name: string, input: any): Promise<{ result: string; 
                     Status: 'Not Started'
                 }
             });
-            const instance = await getInstanceUrl();
+            const instance = await getInstanceUrl(connectionId);
             return {
                 result: JSON.stringify(res.data),
                 task: {
@@ -135,7 +136,7 @@ interface LoopOutcome {
 }
 
 /** Shared Claude tool-use loop for event-driven runs and chat turns. */
-async function runToolLoop(messages: MessageParam[], system: string, onTool?: (name: string) => void): Promise<LoopOutcome> {
+async function runToolLoop(connectionId: string, messages: MessageParam[], system: string, onTool?: (name: string) => void): Promise<LoopOutcome> {
     let createdTask: CreatedTask | undefined;
 
     for (let turn = 0; turn < 8; turn++) {
@@ -165,7 +166,7 @@ async function runToolLoop(messages: MessageParam[], system: string, onTool?: (n
             let result: string;
             let isError = false;
             try {
-                const outcome = await executeTool(block.name, block.input);
+                const outcome = await executeTool(connectionId, block.name, block.input);
                 result = outcome.result;
                 if (outcome.task) createdTask = outcome.task;
             } catch (err: any) {
@@ -188,7 +189,7 @@ async function runToolLoop(messages: MessageParam[], system: string, onTool?: (n
  * arriving fresh from Nango's records cache moments after the change happened
  * in Salesforce. Reported to the UI as one 'agent-activity' chat entry.
  */
-export async function runAgentOnRecordChange(record: NangoRecord): Promise<void> {
+export async function runAgentOnRecordChange(connectionId: string, record: NangoRecord): Promise<void> {
     const action = record._nango_metadata.last_action; // ADDED | UPDATED | DELETED
     const objectType = String(record['object'] ?? 'record');
     const displayName = String(record['display_name'] ?? record.id);
@@ -214,6 +215,7 @@ export async function runAgentOnRecordChange(record: NangoRecord): Promise<void>
         ];
 
         const outcome = await runToolLoop(
+            connectionId,
             messages,
             'You are a CRM assistant that reacts to Salesforce record changes (contacts, leads, accounts, opportunities). ' +
                 'You create ONE concise, genuinely useful follow-up task per change, then summarize what you did in one sentence.'
@@ -253,6 +255,12 @@ export function isChatBusy(): boolean {
 }
 
 export async function chatWithAgent(text: string): Promise<void> {
+    const connectionId = getConnectionId();
+    if (!connectionId) {
+        emit('chat-user', { text });
+        emit('chat-assistant', { text: 'Connect your Salesforce account first — then I can see your org and act on it.' });
+        return;
+    }
     chatBusy = true;
     try {
         emit('chat-user', { text });
@@ -267,7 +275,7 @@ export async function chatWithAgent(text: string): Promise<void> {
             'Recent activity you initiated from Salesforce events (most recent last):\n' +
             (recentActivity.length ? recentActivity.join('\n') : '(none yet this session)');
 
-        const outcome = await runToolLoop([...chatHistory], system, (tool) => emit('chat-tool', { tool }));
+        const outcome = await runToolLoop(connectionId, [...chatHistory], system, (tool) => emit('chat-tool', { tool }));
 
         chatHistory.push({ role: 'assistant', content: outcome.summary });
         emit('chat-assistant', { text: outcome.summary, ...(outcome.task ? { task: outcome.task } : {}) });

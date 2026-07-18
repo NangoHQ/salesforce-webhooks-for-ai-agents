@@ -57,6 +57,9 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
   #send:hover { background: #4338ca; }
   #send:disabled { opacity: .5; cursor: wait; }
   .hint { margin: 6px 0 0; color: #a2aabb; font-size: 11.5px; text-align: center; }
+  .connectbtn { background: #4f46e5; color: #fff; border: 0; border-radius: 9px; padding: 9px 18px; font: inherit; font-weight: 570; cursor: pointer; }
+  .connectbtn:hover { background: #4338ca; }
+  .connectbtn:disabled { opacity: .5; cursor: wait; }
 </style>
 </head>
 <body>
@@ -70,9 +73,12 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
 </header>
 
 <div id="scroll"><div id="feed">
-  <div class="msg agent">
+  <div class="msg agent" id="welcome">
     <div class="who">AI Agent</div>
-    <div class="body">I'm watching your Salesforce org. When a contact, lead, account, or opportunity changes, I'll pick it up here within seconds and act on it. You can also just talk to me — try "how many open opportunities do we have?" or edit a record in Salesforce and watch.</div>
+    <div class="body" id="welcomebody">Checking your Salesforce connection…</div>
+    <div id="connectrow" style="display:none; margin-top:10px;">
+      <button class="connectbtn" id="connectbtn" onclick="connectSalesforce()">Connect Salesforce</button>
+    </div>
   </div>
 </div></div>
 
@@ -136,6 +142,10 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
         if (el) { el.innerHTML = html; scrollDown(); } else { add(div('msg agent', html)); }
         return;
       }
+      case 'connected':
+        setConnected(true);
+        add(div('notice sf', '<span class="zap">🔗</span> Salesforce connected · ' + stamp(e.at)));
+        return;
       case 'chat-user':
         add(div('msg user', esc(e.text)));
         pendingChat = add(div('msg agent',
@@ -153,6 +163,36 @@ export const DEMO_PAGE = /* html */ `<!doctype html>
         else { add(div('msg agent', html)); }
         return;
       }
+    }
+  }
+
+  const READY_MSG = 'I\'m watching your Salesforce org. When a contact, lead, account, or opportunity changes, I\'ll pick it up here within seconds and act on it. You can also just talk to me — try "how many open opportunities do we have?" or edit a record in Salesforce and watch.';
+  const CONNECT_MSG = 'Hi! I\'m an AI agent that reacts to Salesforce changes in real time. Connect your Salesforce account to get started — I\'ll set up the webhook triggers in your org automatically.';
+
+  function setConnected(connected) {
+    document.getElementById('welcomebody').textContent = connected ? READY_MSG : CONNECT_MSG;
+    document.getElementById('connectrow').style.display = connected ? 'none' : 'block';
+    box.disabled = !connected;
+    sendBtn.disabled = !connected;
+    box.placeholder = connected ? 'Message the agent…' : 'Connect Salesforce to start chatting…';
+  }
+
+  fetch('/api/status').then(r => r.json()).then(s => setConnected(s.connected));
+
+  async function connectSalesforce() {
+    const btn = document.getElementById('connectbtn');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/connect-session', { method: 'POST' });
+      const data = await res.json();
+      if (data.connectLink) {
+        window.open(data.connectLink, '_blank', 'width=500,height=700');
+        add(div('notice', 'Finish authorizing in the Nango window — I\'ll pick it up from there.'));
+      } else {
+        add(div('notice', esc(data.error || 'Could not start the connect flow.')));
+      }
+    } finally {
+      btn.disabled = false;
     }
   }
 

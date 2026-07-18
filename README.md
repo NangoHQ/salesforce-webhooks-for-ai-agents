@@ -2,7 +2,7 @@
 
 Trigger an AI agent the moment a record changes in Salesforce — no polling loops, no streaming-API subscriber to babysit.
 
-Salesforce has no native webhooks. This repo builds them with Apex triggers that POST record changes to [Nango](https://nango.dev), which routes them to the right connection, keeps a records cache fresh in real time, and sends your app a signed webhook. Your app then runs a Claude agent that reacts to the change and writes back to Salesforce (it creates a follow-up Task) through Nango's proxy.
+Salesforce has no native webhooks. This repo builds them with Apex triggers that POST record changes to [Nango](https://nango.dev), which routes them to the right connection, keeps a records cache fresh in real time, and sends your app a signed webhook. Your app then runs your AI agent (Claude in this demo), which reacts to the change and writes back to Salesforce (it creates a follow-up Task) through Nango's proxy.
 
 Out of the box it watches **Contacts, Leads, Accounts, and Opportunities** — one config file ([`nango-integrations/salesforce/objects.ts`](nango-integrations/salesforce/objects.ts)) drives the Apex provisioning, the Nango sync, and the app, so adding another object (including custom objects) is a single config entry. Tasks are deliberately excluded: the agent *writes* Tasks, and subscribing to the object your agent writes to makes it react to its own output.
 
@@ -36,7 +36,7 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env` (each variable documents where to find its value in the Nango dashboard).
+Fill in `.env` (each variable documents where to find its value in the Nango dashboard). `NANGO_CONNECTION_ID` is optional — leave it empty to use the real auth flow: the app's **Connect Salesforce** button walks the user through Nango's hosted Connect UI, the `auth` webhook delivers the new connection ID, and the app provisions the org automatically.
 
 ### 2. Deploy the Nango sync
 
@@ -72,7 +72,9 @@ npm run dev        # starts the receiver on :3000
 ngrok http 3000    # in another terminal
 ```
 
-In the Nango dashboard → **Environment Settings → Webhooks**, set the primary webhook URL to `https://<your-tunnel>/webhooks/nango`.
+In the Nango dashboard → **Environment Settings → Webhooks**, set the primary webhook URL to `https://<your-tunnel>/webhooks/nango` and enable **Send New Connection Creation Webhooks** (that's how the app learns about newly connected accounts).
+
+If you left `NANGO_CONNECTION_ID` empty, open **http://localhost:3000** now and click **Connect Salesforce**: authorize in the Nango window, and the app captures the connection from the `auth` webhook and provisions the org on the spot — step 3 happens automatically for every account connected this way.
 
 ### 5. Trigger it
 

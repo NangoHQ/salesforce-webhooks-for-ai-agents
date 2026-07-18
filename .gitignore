@@ -9,3 +9,4 @@ nango-integrations/build/
 
 # Article draft (published separately, not part of the sample repo)
 ARTICLE.md
+.connection.json

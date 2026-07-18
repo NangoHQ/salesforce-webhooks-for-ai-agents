@@ -13,6 +13,8 @@ import { getCursor, saveCursor } from './cursor-store.js';
 import { runAgentOnRecordChange, chatWithAgent, isChatBusy } from './agent.js';
 import { emit, subscribe } from './events.js';
 import { DEMO_PAGE } from './ui.js';
+import { getConnectionId, saveConnectionId } from './connection-store.js';
+import { provisionSalesforce } from './provision.js';
 import { configForModel } from '../nango-integrations/salesforce/objects.js';
 
 // Fail fast at startup instead of failing on the first webhook/agent run.
@@ -56,6 +58,28 @@ function enqueue(key: string, run: () => Promise<void>): void {
 // Demo UI: the agent chat interface at http://localhost:<port>/
 app.get('/', (_req, res) => res.type('html').send(DEMO_PAGE));
 app.get('/events', (_req, res) => subscribe(res));
+
+// Is a Salesforce account connected yet? Drives the UI's connect state.
+app.get('/api/status', (_req, res) => {
+    res.json({ connected: Boolean(getConnectionId()) });
+});
+
+// Auth-first flow, step 1: create a Nango connect session and hand the
+// connect link to the browser. The user authorizes their Salesforce account
+// in Nango's hosted Connect UI; we never see their credentials.
+app.post('/api/connect-session', async (_req, res) => {
+    try {
+        const { data } = await nango.createConnectSession({
+            // Reconciles the auth webhook with a user in your system.
+            // A real app would use the logged-in user's identity here.
+            tags: { end_user_id: 'demo-user' },
+            allowed_integrations: [env.integrationId]
+        });
+        res.json({ connectLink: (data as any).connect_link, token: data.token });
+    } catch (err: any) {
+        res.status(500).json({ error: String(err?.response?.data?.error?.message ?? err?.message ?? err) });
+    }
+});
 
 // Chat with the same agent that reacts to Salesforce events. One shared
 // in-memory conversation — this is a demo, not a session manager.
@@ -108,8 +132,23 @@ async function handleWebhook(payload: any): Promise<void> {
             return;
 
         case 'auth':
-            if (payload.operation === 'creation' && payload.success) {
+            // Auth-first flow, step 2: the user finished authorizing in the
+            // Connect UI. Persist the connection ID (Nango doesn't model which
+            // of your users owns it — that's your job), then provision their
+            // org so the webhook pipeline starts flowing. This is exactly what
+            // a multi-tenant product does for every new customer.
+            if (payload.operation === 'creation' && payload.success && payload.providerConfigKey === env.integrationId) {
                 console.log(`\n🔗 New connection created: ${payload.connectionId} (${payload.providerConfigKey})`);
+                saveConnectionId(payload.connectionId);
+                emit('connected', { connectionId: payload.connectionId });
+                emit('info', { text: 'Salesforce connected. Installing webhook triggers in your org…' });
+                try {
+                    await provisionSalesforce(payload.connectionId, (line) => console.log(`   ${line}`));
+                    emit('info', { text: 'Your org is set up: watching Contacts, Leads, Accounts, and Opportunities. Change a record to see the agent react.' });
+                } catch (err: any) {
+                    console.error('Auto-provisioning failed:', err?.response?.data ?? err);
+                    emit('info', { text: `Salesforce is connected, but setting up the org failed: ${err?.message ?? err}. Run "npm run provision" after fixing the issue.` });
+                }
             }
             return;
 
@@ -126,6 +165,13 @@ async function handleSyncWebhook(payload: any): Promise<void> {
     }
     const objectConfig = configForModel(payload.model);
     if (!objectConfig) return;
+
+    // Single-connection demo: ignore sync webhooks from connections other
+    // than the active one (e.g. an old connection after a re-connect).
+    if (payload.connectionId !== getConnectionId()) {
+        console.log(`   (ignoring sync webhook for inactive connection ${payload.connectionId})`);
+        return;
+    }
 
     const { added = 0, updated = 0, deleted = 0 } = payload.responseResults ?? {};
     console.log(`\n📥 Sync webhook: ${payload.syncName}/${payload.model} (+${added} ~${updated} -${deleted})`);
@@ -173,7 +219,7 @@ async function handleSyncWebhook(payload: any): Promise<void> {
 
     for (const record of records) {
         try {
-            await runAgentOnRecordChange(record);
+            await runAgentOnRecordChange(payload.connectionId, record);
         } catch (err) {
             // Advance past failed records anyway: a poison record must not
             // wedge the pipeline. The trade-off (this record's agent run is
@@ -192,7 +238,9 @@ function advanceCursorPastAll(payload: any, records: { _nango_metadata: { cursor
 }
 
 app.listen(env.port, () => {
+    const connection = getConnectionId();
     console.log(`Webhook receiver listening on http://localhost:${env.port}/webhooks/nango`);
+    console.log(connection ? `Active Salesforce connection: ${connection}` : 'No Salesforce connection yet — connect from the app UI.');
     console.log(`Demo app: http://localhost:${env.port}/`);
     console.log('Expose the port publicly (e.g. `ngrok http ' + env.port + '`) and set the public URL');
     console.log('in Nango: Environment Settings → Webhooks → Webhook URLs.');
