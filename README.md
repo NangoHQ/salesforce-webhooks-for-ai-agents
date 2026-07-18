@@ -36,7 +36,7 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env` (each variable documents where to find its value in the Nango dashboard). `NANGO_CONNECTION_ID` is optional — leave it empty to use the real auth flow: the app's **Connect Salesforce** button walks the user through Nango's hosted Connect UI, the `auth` webhook delivers the new connection ID, and the app provisions the org automatically.
+Fill in `.env` (each variable documents where to find its value in the Nango dashboard). There is no connection ID to configure — like a real product, the app starts unconnected: users authorize through the **Connect Salesforce** button, the `auth` webhook delivers the connection ID, and the app holds it in memory (no persistence in this demo, so reconnect after a restart).
 
 ### 2. Deploy the Nango sync
 
@@ -51,30 +51,24 @@ This deploys [`salesforce/syncs/records.ts`](nango-integrations/salesforce/syncs
 
 The sync starts automatically and its **first run fetches every existing record of every watched object** — that's why this step comes before pointing webhooks at your app (the server also guards against full-sync floods, but ordering makes it safe by construction).
 
-### 3. Provision the Salesforce org
-
-```bash
-npm run provision
-```
-
-This installs everything Salesforce-side through Nango's proxy using your existing connection's OAuth token — no Salesforce CLI, no Setup UI:
-
-1. A **Remote Site Setting** allowing callouts to `https://api.nango.dev`
-2. The **`NangoWebhookNotifier`** Apex class ([source](salesforce/NangoWebhookNotifier.cls)) — the shared handler: change detection, batching, async callout
-3. One thin **Apex trigger per watched object** (generated from [this template](salesforce/NangoRecordTrigger.trigger.tpl)): `NangoContactTrigger`, `NangoLeadTrigger`, `NangoAccountTrigger`, `NangoOpportunityTrigger`
-
-> In a multi-tenant product you'd run this same logic in a Nango [`post-connection-creation` event script](https://nango.dev/docs/guides/functions/event-functions) so every new customer connection gets provisioned automatically.
-
-### 4. Point Nango webhooks at your app
+### 3. Point Nango webhooks at your app
 
 ```bash
 npm run dev        # starts the receiver on :3000
 ngrok http 3000    # in another terminal
 ```
 
-In the Nango dashboard → **Environment Settings → Webhooks**, set the primary webhook URL to `https://<your-tunnel>/webhooks/nango` and enable **Send New Connection Creation Webhooks** (that's how the app learns about newly connected accounts).
+In the Nango dashboard → **Environment Settings → Webhooks**, set the primary webhook URL to `https://<your-tunnel>/webhooks/nango` and enable **Send New Connection Creation Webhooks** (that's how the app learns about newly connected accounts). Do this before connecting in step 4 — without it, the `auth` webhook never reaches the app.
 
-If you left `NANGO_CONNECTION_ID` empty, open **http://localhost:3000** now and click **Connect Salesforce**: authorize in the Nango window, and the app captures the connection from the `auth` webhook and provisions the org on the spot — step 3 happens automatically for every account connected this way.
+### 4. Connect a Salesforce account
+
+Open **http://localhost:3000** and click **Connect Salesforce** — authorize in Nango's hosted Connect UI. The moment the `auth` webhook arrives, the app provisions the org through Nango's proxy using the fresh OAuth connection — no Salesforce CLI, no Setup UI, nothing for the connecting user to do:
+
+1. A **Remote Site Setting** allowing callouts to `https://api.nango.dev`
+2. The **`NangoWebhookNotifier`** Apex class ([source](salesforce/NangoWebhookNotifier.cls)) — the shared handler: change detection, batching, async callout
+3. One thin **Apex trigger per watched object** (generated from [this template](salesforce/NangoRecordTrigger.trigger.tpl)): `NangoContactTrigger`, `NangoLeadTrigger`, `NangoAccountTrigger`, `NangoOpportunityTrigger`
+
+> To manually re-provision a specific connection (e.g. after changing watched objects), run `npm run provision -- <connection-id>`. In a fully Nango-hosted setup, the same logic can live in a [`post-connection-creation` event script](https://nango.dev/docs/guides/functions/event-functions).
 
 ### 5. Trigger it
 

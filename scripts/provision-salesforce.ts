@@ -1,21 +1,19 @@
 /**
- * CLI wrapper around src/provision.ts — provisions the Salesforce org behind
- * the current connection (from the in-app auth flow, or NANGO_CONNECTION_ID
- * in .env as a fallback).
+ * CLI wrapper around src/provision.ts, for manually (re-)provisioning the
+ * Salesforce org behind a specific connection:
  *
- * The same provisioning runs automatically when a user connects their org
- * through the app's Connect flow — see the `auth` webhook handler in
- * src/server.ts.
+ *   npm run provision -- <connection-id>
+ *
+ * You normally don't need this: provisioning runs automatically when a user
+ * connects their org through the app — see the `auth` webhook handler in
+ * src/server.ts. Find connection IDs in the Nango dashboard's Connections tab.
  */
-import { getConnectionId } from '../src/connection-store.js';
 import { provisionSalesforce } from '../src/provision.js';
 
-const connectionId = getConnectionId();
+const connectionId = process.argv[2];
 if (!connectionId) {
-    console.error(
-        'No Salesforce connection yet. Either connect through the app (npm run dev → http://localhost:3000)\n' +
-            'or set NANGO_CONNECTION_ID in .env to an existing connection.'
-    );
+    console.error('Usage: npm run provision -- <connection-id>');
+    console.error('(Connection IDs are in the Nango dashboard, Connections tab.)');
     process.exit(1);
 }
 

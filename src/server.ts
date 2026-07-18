@@ -13,7 +13,7 @@ import { getCursor, saveCursor } from './cursor-store.js';
 import { runAgentOnRecordChange, chatWithAgent, isChatBusy } from './agent.js';
 import { emit, subscribe } from './events.js';
 import { DEMO_PAGE } from './ui.js';
-import { getConnectionId, saveConnectionId } from './connection-store.js';
+import { getConnectionId, setConnectionId } from './connection-store.js';
 import { provisionSalesforce } from './provision.js';
 import { configForModel } from '../nango-integrations/salesforce/objects.js';
 
@@ -139,7 +139,7 @@ async function handleWebhook(payload: any): Promise<void> {
             // a multi-tenant product does for every new customer.
             if (payload.operation === 'creation' && payload.success && payload.providerConfigKey === env.integrationId) {
                 console.log(`\n🔗 New connection created: ${payload.connectionId} (${payload.providerConfigKey})`);
-                saveConnectionId(payload.connectionId);
+                setConnectionId(payload.connectionId);
                 emit('connected', { connectionId: payload.connectionId });
                 emit('info', { text: 'Salesforce connected. Installing webhook triggers in your org…' });
                 try {
@@ -238,9 +238,8 @@ function advanceCursorPastAll(payload: any, records: { _nango_metadata: { cursor
 }
 
 app.listen(env.port, () => {
-    const connection = getConnectionId();
     console.log(`Webhook receiver listening on http://localhost:${env.port}/webhooks/nango`);
-    console.log(connection ? `Active Salesforce connection: ${connection}` : 'No Salesforce connection yet — connect from the app UI.');
+    console.log('No Salesforce connection yet (in-memory only) — connect from the app UI.');
     console.log(`Demo app: http://localhost:${env.port}/`);
     console.log('Expose the port publicly (e.g. `ngrok http ' + env.port + '`) and set the public URL');
     console.log('in Nango: Environment Settings → Webhooks → Webhook URLs.');
