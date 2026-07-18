@@ -6,18 +6,6 @@ Salesforce has no native webhooks. This repo builds them with Apex triggers that
 
 Out of the box it watches **Contacts, Leads, Accounts, and Opportunities** — one config file ([`nango-integrations/salesforce/objects.ts`](nango-integrations/salesforce/objects.ts)) drives the Apex provisioning, the Nango sync, and the app, so adding another object (including custom objects) is a single config entry. Tasks are deliberately excluded: the agent *writes* Tasks, and subscribing to the object your agent writes to makes it react to its own output.
 
-```
-Salesforce org                Nango                          Your app
-┌────────────────┐   POST    ┌─────────────────────┐  signed  ┌──────────────────┐
-│ Contact changes │ ────────▶ │ webhook URL          │ ───────▶ │ /webhooks/nango  │
-│ Apex trigger    │           │ → routes to          │  webhook │ → fetch changed  │
-│ + @future       │           │   connection         │          │   records        │
-│   callout       │           │ → onWebhook sync     │          │ → run AI agent   │
-└────────────────┘           │   saves records      │          │ → agent writes   │
-        ▲                    └─────────────────────┘          │   back via Nango │
-        └────────────────────── create Task ◀─────────────────└──────────────────┘
-```
-
 An hourly incremental sync reconciles anything the webhook path misses (Apex `@future` callouts are fire-and-forget), so the records cache is both real-time *and* reliable.
 
 ## Prerequisites
@@ -107,21 +95,4 @@ Check the record in Salesforce — the agent's Task is attached to its activity 
 
 The routing contract: the Apex payload's `nango.connectionId` tells Nango which connection the event belongs to, and `nango.eventType` is matched against the sync's `webhookSubscriptions`.
 
-## Troubleshooting
 
-| Symptom | Cause / fix |
-|---|---|
-| Nothing in Nango Logs after editing a contact | Remote Site Setting missing; Apex trigger not deployed; `@future` can lag a few seconds — check Salesforce Setup → Apex Jobs |
-| Webhook logged in Nango but sync doesn't run | `eventType` in Apex doesn't exactly match `webhookSubscriptions` in the sync; or the integration uses a non-base provider (e.g. `salesforce-sandbox`) which silently drops inbound webhooks |
-| App receives nothing | Webhook URL not set in Environment Settings, or tunnel died |
-| `401 invalid signature` | Verify with the **webhook signing key** (Environment Settings → Webhooks), not the API secret key |
-| Agent re-triggers itself | The trigger only fires on tracked-field changes; Task creation doesn't touch the Contact. Keep that guard if you extend the trigger |
-| Bulk edit produced no agent runs | Intentional: more than `MAX_AGENT_RUNS_PER_WEBHOOK` (10) changes in one webhook skips per-record agent runs to avoid CRM noise and API spend. Raise the cap in `src/server.ts` if you want them |
-| Agent ran on old/historical contacts | Shouldn't happen: the server primes the cursor past the sync's initial full run without invoking the agent. If you re-deploy the sync with a cache reset, the same guard applies |
-
-## Learn more
-
-- [Nango webhook functions](https://nango.dev/docs/guides/functions/webhook-functions)
-- [Real-time syncs](https://nango.dev/docs/guides/functions/syncs/realtime-syncs)
-- [Webhooks from Nango](https://nango.dev/docs/guides/platform/webhooks-from-nango)
-- [Tool calling & MCP for AI agents](https://nango.dev/docs/guides/functions/tool-calling)
